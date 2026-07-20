@@ -4,7 +4,6 @@ import os
 
 class S3Service:
     def __init__(self):
-        # Use environment variables or defaults for LocalStack
         endpoint_url = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
         
         self.client = boto3.client(
@@ -18,19 +17,16 @@ class S3Service:
         self.bucket = "acip-evidence-dev"
     
     def upload_file(self, incident_id: str, filename: str, content: bytes):
-        """Upload a file to S3 for an incident"""
         key = f"incidents/{incident_id}/{filename}"
         self.client.put_object(Bucket=self.bucket, Key=key, Body=content)
         return f"s3://{self.bucket}/{key}"
     
     def get_file(self, incident_id: str, filename: str):
-        """Download a file from S3"""
         key = f"incidents/{incident_id}/{filename}"
         response = self.client.get_object(Bucket=self.bucket, Key=key)
         return response['Body'].read()
     
     def list_files(self, incident_id: str):
-        """List all evidence files for an incident"""
         prefix = f"incidents/{incident_id}/"
         response = self.client.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
         return [obj['Key'] for obj in response.get('Contents', [])]

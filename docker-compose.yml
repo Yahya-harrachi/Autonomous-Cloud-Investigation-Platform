@@ -34,6 +34,39 @@ services:
       - localstack_data:/var/lib/localstack
       - /var/run/docker.sock:/var/run/docker.sock
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: acip-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql://acip:acip_dev_password@postgres:5432/acip
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: acip-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_DOCKER=true
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   localstack_data:
