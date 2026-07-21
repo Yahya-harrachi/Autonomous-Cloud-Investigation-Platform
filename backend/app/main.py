@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from .api.routes import ingestion  # ✅ CORRECT
 from .api import incidents
 from .core.database import engine, Base
 
@@ -23,6 +25,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(incidents.router)
+
+app.include_router(ingestion.router) 
 
 @app.get("/")
 async def root():
