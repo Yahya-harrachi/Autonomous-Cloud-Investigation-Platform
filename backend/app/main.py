@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from .api.routes import ingestion  # ✅ CORRECT
-from .api import incidents
+from .api.routes import ingestion
+from .api.routes import incidents  # Existing incident endpoints
 from .core.database import engine, Base
+from .models.incident import IncidentModel  # Import to create table
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -17,16 +17,15 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development only
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers
+app.include_router(ingestion.router)
 app.include_router(incidents.router)
-
-app.include_router(ingestion.router) 
 
 @app.get("/")
 async def root():

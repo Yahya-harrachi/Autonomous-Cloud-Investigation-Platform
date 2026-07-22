@@ -3,7 +3,7 @@ Abstract interface for incident creation
 """
 from abc import ABC, abstractmethod
 from ..models.event import NormalizedEvent
-from ..models.incident import Incident
+from ...domain.models.incident import Incident
 
 
 class IncidentCreator(ABC):

@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
 import uuid
-from ..core.database import get_db
-from ..models.incident import Incident, IncidentStatus
-from ..schemas.incident import IncidentCreate, IncidentResponse
-from ..services.s3_service import S3Service
+from ...core.database import get_db
+from ...domain.models.incident import Incident, IncidentStatus
+from ...schemas.incident import IncidentCreate, IncidentResponse
+from ...services.s3_service import S3Service
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
@@ -162,3 +162,28 @@ def delete_evidence(incident_id: str, filename: str):
         return {"message": f"Evidence file {filename} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"File not found: {str(e)}")
+
+@router.get("/from-ingestion")
+async def get_incidents_from_ingestion():
+    """Get all incidents created by the ingestion pipeline"""
+    from ...application.services.ingestion import IngestionService
+    service = IngestionService()
+    incidents = service.get_incidents()
+    
+    return {
+        "total": len(incidents),
+        "incidents": [
+            {
+                "id": i.id,
+                "title": i.title,
+                "description": i.description,
+                "priority": i.priority.value,
+                "status": i.status.value,
+                "source_type": i.source_type,
+                "created_at": i.created_at.isoformat(),
+                "tags": i.tags,
+                "metadata": i.metadata
+            }
+            for i in incidents
+        ]
+    }
