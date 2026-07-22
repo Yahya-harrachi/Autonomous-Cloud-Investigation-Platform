@@ -3,40 +3,30 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { incidentAPI } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
 import SeverityBadge from '../components/SeverityBadge';
-import EvidenceUpload from '../components/EvidenceUpload';
 
 const IncidentDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [incident, setIncident] = useState(null);
-  const [evidence, setEvidence] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState('');
+  const [error, setError] = useState(null);
   const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     loadIncident();
-    loadEvidence();
   }, [id]);
 
   const loadIncident = async () => {
     try {
+      setLoading(true);
+      setError(null);
       const data = await incidentAPI.getById(id);
       setIncident(data);
-      setStatus(data.status);
+    } catch (err) {
+      console.error('Error loading incident:', err);
+      setError('Incident not found');
+    } finally {
       setLoading(false);
-    } catch (error) {
-      console.error('Failed to load incident:', error);
-      setLoading(false);
-    }
-  };
-
-  const loadEvidence = async () => {
-    try {
-      const data = await incidentAPI.listEvidence(id);
-      setEvidence(data.evidence_files || []);
-    } catch (error) {
-      console.error('Failed to load evidence:', error);
     }
   };
 
@@ -44,12 +34,12 @@ const IncidentDetail = () => {
     setUpdating(true);
     try {
       await incidentAPI.updateStatus(id, newStatus);
-      setStatus(newStatus);
-      setIncident({ ...incident, status: newStatus });
-    } catch (error) {
-      console.error('Failed to update status:', error);
+      await loadIncident();
+    } catch (err) {
+      console.error('Error updating status:', err);
+    } finally {
+      setUpdating(false);
     }
-    setUpdating(false);
   };
 
   const handleDelete = async () => {
@@ -57,23 +47,8 @@ const IncidentDetail = () => {
       try {
         await incidentAPI.delete(id);
         navigate('/incidents');
-      } catch (error) {
-        console.error('Failed to delete incident:', error);
-      }
-    }
-  };
-
-  const handleEvidenceUploaded = () => {
-    loadEvidence();
-  };
-
-  const handleEvidenceDelete = async (filename) => {
-    if (window.confirm(`Delete ${filename}?`)) {
-      try {
-        await incidentAPI.deleteEvidence(id, filename);
-        loadEvidence();
-      } catch (error) {
-        console.error('Failed to delete evidence:', error);
+      } catch (err) {
+        console.error('Error deleting incident:', err);
       }
     }
   };
@@ -82,7 +57,7 @@ const IncidentDetail = () => {
     return <div className="text-center py-8">Loading incident...</div>;
   }
 
-  if (!incident) {
+  if (error || !incident) {
     return <div className="text-center py-8 text-red-500">Incident not found</div>;
   }
 
@@ -94,8 +69,8 @@ const IncidentDetail = () => {
           <div>
             <h1 className="text-2xl font-bold">{incident.title}</h1>
             <div className="flex items-center space-x-4 mt-2">
-              <SeverityBadge severity={incident.severity} />
-              <StatusBadge status={status} />
+              <SeverityBadge severity={incident.priority?.toUpperCase() || 'MEDIUM'} />
+              <StatusBadge status={incident.status || 'pending'} />
               <span className="text-sm text-gray-500">
                 Created: {new Date(incident.created_at).toLocaleString()}
               </span>
@@ -124,8 +99,8 @@ const IncidentDetail = () => {
               <p className="mt-1">{incident.source_type || 'N/A'}</p>
             </div>
             <div>
-              <h3 className="text-sm font-medium text-gray-500">Source ID</h3>
-              <p className="mt-1 text-sm text-gray-600">{incident.source_id || 'N/A'}</p>
+              <h3 className="text-sm font-medium text-gray-500">Source Event ID</h3>
+              <p className="mt-1 text-sm text-gray-600">{incident.source_event_id || 'N/A'}</p>
             </div>
           </div>
 
@@ -139,6 +114,20 @@ const IncidentDetail = () => {
             </div>
           )}
 
+          {/* Tags */}
+          {incident.tags && incident.tags.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-500">Tags</h3>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {incident.tags.map((tag) => (
+                  <span key={tag} className="px-2 py-1 bg-gray-100 rounded-md text-xs">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Status Update */}
           <div className="border-t border-gray-200 pt-4">
             <h3 className="text-sm font-medium text-gray-500 mb-2">Update Status</h3>
@@ -147,9 +136,9 @@ const IncidentDetail = () => {
                 <button
                   key={s}
                   onClick={() => handleStatusUpdate(s)}
-                  disabled={updating || status === s}
+                  disabled={updating || incident.status === s}
                   className={`px-3 py-1 rounded-md text-sm ${
-                    status === s
+                    incident.status === s
                       ? 'bg-gray-800 text-white'
                       : 'bg-gray-200 hover:bg-gray-300'
                   } ${updating ? 'opacity-50' : ''}`}
@@ -158,31 +147,6 @@ const IncidentDetail = () => {
                 </button>
               ))}
             </div>
-          </div>
-
-          {/* Evidence Upload */}
-          <div className="border-t border-gray-200 pt-4">
-            <h3 className="text-sm font-medium text-gray-500 mb-2">Evidence</h3>
-            <EvidenceUpload incidentId={id} onUpload={handleEvidenceUploaded} />
-            
-            {evidence.length > 0 && (
-              <ul className="mt-4 space-y-2">
-                {evidence.map((file) => {
-                  const filename = file.split('/').pop();
-                  return (
-                    <li key={file} className="flex items-center justify-between bg-gray-50 p-2 rounded">
-                      <span className="text-sm">{filename}</span>
-                      <button
-                        onClick={() => handleEvidenceDelete(filename)}
-                        className="text-red-500 hover:text-red-700 text-sm"
-                      >
-                        Delete
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
           </div>
         </div>
       </div>

@@ -74,13 +74,12 @@ class IncidentModel(Base):
     evidence_count = Column(JSON, default=0)  # Using JSON instead of Integer
     
     def to_dict(self):
-        """Convert to dictionary for API responses"""
         return {
             "id": str(self.id),
             "title": self.title,
             "description": self.description,
-            "priority": self.priority.value if self.priority else None,
-            "status": self.status.value if self.status else None,
+            "severity": self.priority.value if self.priority else "MEDIUM",  # ✅ priority → severity
+            "status": self.status.value if self.status else "pending",
             "source_type": self.source_type,
             "source_event_id": self.source_event_id,
             "tags": self.tags or [],
