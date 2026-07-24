@@ -1,4 +1,6 @@
 .env
 node_modules
 .git
+
 backend/.env
+frontend/.env

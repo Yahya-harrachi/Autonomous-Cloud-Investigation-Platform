@@ -2,7 +2,6 @@ import os
 from typing import Optional
 
 class Settings:
-    # ... your existing settings ...
     
     # ===== AWS Configuration =====
     AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
