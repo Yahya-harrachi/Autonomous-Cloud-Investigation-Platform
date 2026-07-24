@@ -9,6 +9,7 @@ const IncidentList = () => {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [stats, setStats] = useState({});
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -17,21 +18,32 @@ const IncidentList = () => {
   const loadData = async () => {
     try {
       setLoading(true);
+      setError(null);
+
+      // Fetch from PostgreSQL only
       const [incidentsRes, statsRes] = await Promise.all([
         incidentAPI.getAll(0, 100, filter === 'all' ? null : filter),
-        incidentAPI.getStats()
+        incidentAPI.getStats(),
       ]);
-      setIncidents(incidentsRes.incidents || []);
+
+      const incidentsData = Array.isArray(incidentsRes) ? incidentsRes : incidentsRes?.incidents || [];
+      setIncidents(incidentsData);
       setStats(statsRes || {});
     } catch (err) {
       console.error('Error loading incidents:', err);
+      setError('Failed to load incidents from database.');
+      setIncidents([]);
     } finally {
       setLoading(false);
     }
   };
 
   if (loading) {
-    return <div className="text-center py-8">Loading incidents...</div>;
+    return <div className="text-center py-8">Loading incidents from database...</div>;
+  }
+
+  if (error) {
+    return <div className="text-center py-8 text-red-500">{error}</div>;
   }
 
   return (
@@ -40,35 +52,23 @@ const IncidentList = () => {
         <div>
           <h1 className="text-3xl font-bold">Incidents</h1>
           <p className="text-sm text-gray-500">
-            Total: {stats.total || 0} | Pending: {stats.pending || 0} | Investigating: {stats.investigating || 0} | Resolved: {stats.resolved || 0}
+            Total: {stats.total || 0} | Pending: {stats.pending || 0} | Investigating:{' '}
+            {stats.investigating || 0} | Resolved: {stats.resolved || 0}
           </p>
         </div>
-        <button
-          onClick={async () => {
-            try {
-              await incidentAPI.runIngestion(3);
-              loadData();
-            } catch (err) {
-              console.error('Error running ingestion:', err);
-            }
-          }}
-          className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
-        >
-          Generate Events
-        </button>
       </div>
 
       {/* Filter Bar */}
-      <div className="mb-6 flex space-x-2">
+      <div className="mb-6 flex space-x-2 flex-wrap gap-2">
         {['all', 'pending', 'investigating', 'completed', 'resolved'].map((s) => (
           <button
             key={s}
             onClick={() => setFilter(s)}
-            className={`px-4 py-2 rounded-md ${
+            className={`px-4 py-2 rounded-md capitalize ${
               filter === s ? 'bg-gray-800 text-white' : 'bg-gray-200 hover:bg-gray-300'
             }`}
           >
-            {s.charAt(0).toUpperCase() + s.slice(1)}
+            {s}
           </button>
         ))}
       </div>
@@ -99,7 +99,7 @@ const IncidentList = () => {
             {incidents.length === 0 ? (
               <tr>
                 <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
-                  No incidents found
+                  No incidents found in the database.
                 </td>
               </tr>
             ) : (
@@ -111,7 +111,9 @@ const IncidentList = () => {
                     </Link>
                   </td>
                   <td className="px-6 py-4">
-                    <SeverityBadge severity={(incident.priority || incident.severity || 'MEDIUM').toUpperCase()} />
+                    <SeverityBadge
+                      severity={(incident.priority || incident.severity || 'MEDIUM').toUpperCase()}
+                    />
                   </td>
                   <td className="px-6 py-4">
                     <StatusBadge status={incident.status || 'pending'} />

@@ -1,6 +1,6 @@
-// API service for communicating with backend
 import axios from 'axios';
 
+// Use the backend URL directly (no proxy)
 const API_BASE_URL = 'http://localhost:8000/api';
 
 const api = axios.create({
@@ -15,14 +15,14 @@ export const incidentAPI = {
   // Get all incidents from PostgreSQL
   getAll: async (skip = 0, limit = 100, status = null) => {
     let url = `/incidents/?skip=${skip}&limit=${limit}`;
-    if (status) {
+    if (status && status !== 'all') {
       url += `&status=${status}`;
     }
     const response = await api.get(url);
     return response.data;
   },
 
-  // Get incident by ID
+  // Get a single incident by ID
   getById: async (id) => {
     const response = await api.get(`/incidents/${id}`);
     return response.data;
@@ -40,49 +40,17 @@ export const incidentAPI = {
     return response.data;
   },
 
-  // Assign incident
-  assign: async (id, assignedTo, assignedTeam = null) => {
-    const response = await api.post(`/incidents/${id}/assign`, null, {
-      params: { assigned_to: assignedTo, assigned_team: assignedTeam }
-    });
-    return response.data;
-  },
-
   // Delete incident
   delete: async (id) => {
     const response = await api.delete(`/incidents/${id}`);
     return response.data;
   },
 
-  // Get incident stats
+  // Get incident statistics from PostgreSQL
   getStats: async () => {
     const response = await api.get('/incidents/stats');
     return response.data;
   },
-
-  // Get incidents from ingestion (memory)
-  getFromIngestion: async () => {
-    const response = await api.get('/ingestion/incidents');
-    return response.data;
-  },
-
-  // Trigger ingestion
-  runIngestion: async (count = 5) => {
-    const response = await api.post(`/ingestion/run?count=${count}`);
-    return response.data;
-  },
-
-  // Clear all (ingestion)
-  clearIngestion: async () => {
-    const response = await api.post('/ingestion/clear');
-    return response.data;
-  },
-
-  // Get ingestion stats
-  getIngestionStats: async () => {
-    const response = await api.get('/ingestion/stats');
-    return response.data;
-  }
 };
 
 export default api;
