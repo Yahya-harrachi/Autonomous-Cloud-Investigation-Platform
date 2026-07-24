@@ -4,6 +4,7 @@ from .api.routes import ingestion
 from .api.routes import incidents  # Existing incident endpoints
 from .core.database import engine, Base
 from .models.incident import IncidentModel  # Import to create table
+from .api.routes.debug import cloudtrail
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -26,6 +27,7 @@ app.add_middleware(
 # Include routers
 app.include_router(ingestion.router)
 app.include_router(incidents.router)
+app.include_router(cloudtrail.router)
 
 @app.get("/")
 async def root():
