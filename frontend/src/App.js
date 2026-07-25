@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import IncidentList from './pages/IncidentList';
 import IncidentDetail from './pages/IncidentDetail';
 import CreateIncident from './pages/CreateIncident';
+import EventsViewer from './pages/EventsViewer'; 
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="/incidents" element={<IncidentList />} />
           <Route path="/incidents/new" element={<CreateIncident />} />
           <Route path="/incidents/:id" element={<IncidentDetail />} />
+          <Route path="/events" element={<EventsViewer />} />
         </Routes>
       </div>
     </Router>

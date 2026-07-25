@@ -14,6 +14,7 @@ const Header = () => {
           <nav className="flex space-x-6">
             <Link to="/" className="hover:text-gray-300">Dashboard</Link>
             <Link to="/incidents" className="hover:text-gray-300">Incidents</Link>
+            <Link to="/events" className="hover:text-gray-300">Events</Link>  {/* ✅ NEW */}
             <Link to="/incidents/new" className="hover:text-gray-300">New Incident</Link>
           </nav>
         </div>
