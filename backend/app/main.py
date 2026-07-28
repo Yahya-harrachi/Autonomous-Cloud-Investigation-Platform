@@ -29,6 +29,7 @@ app.include_router(ingestion.router)
 app.include_router(incidents.router)
 app.include_router(cloudtrail.router)
 
+
 @app.get("/")
 async def root():
     return {
