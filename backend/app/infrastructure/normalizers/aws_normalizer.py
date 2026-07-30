@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from .base import Normalizer
 from ...domain.models.event import RawEvent, NormalizedEvent
+from ...risk.threat_intel import ThreatIntelManager
+
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +132,7 @@ class AWSNormalizer(Normalizer):
             if isinstance(is_read_only, str):
                 is_read_only = is_read_only.lower() == "true"
             
-            # ===== TIMING - FIXED =====
+            # ===== TIMING =====
             event_time = data.get("eventTime", data.get("EventTime", ""))
             
             if event_time:
@@ -151,7 +153,10 @@ class AWSNormalizer(Normalizer):
             region = data.get("awsRegion", data.get("AwsRegion", event_data.get("awsRegion")))
             account_id = data.get("recipientAccountId", data.get("AccountId", event_data.get("accountId")))
             
-            # ===== SEVERITY =====
+            # ===== THREAT INTELLIGENCE =====
+            threat_intel = self._get_threat_intel(actor_ip)
+            
+            # ===== SEVERITY (WITH THREAT INTEL) =====
             severity, severity_score, severity_reason = self._determine_severity_context(
                 event_name=event_name,
                 identity_type=identity_type,
@@ -159,6 +164,7 @@ class AWSNormalizer(Normalizer):
                 request_params=request_params,
                 is_read_only=is_read_only,
                 data=data,
+                threat_intel=threat_intel,
             )
             
             # ===== EVENT CATEGORY =====
@@ -179,6 +185,7 @@ class AWSNormalizer(Normalizer):
                 request_params=request_params,
                 is_read_only=is_read_only,
                 data=data,
+                threat_intel=threat_intel,
             )
             
             # ===== METADATA =====
@@ -231,6 +238,7 @@ class AWSNormalizer(Normalizer):
                 tags=tags,
                 related_events=[],
                 metadata=metadata,
+                threat_intel=threat_intel,
                 raw_event=data,
             )
             
@@ -240,7 +248,11 @@ class AWSNormalizer(Normalizer):
             traceback.print_exc()
             raise
     
-  
+    # ================================================================
+    # GUARDDUTY NORMALIZER
+    # ================================================================
+    
+    
     # ================================================================
     # S3 NORMALIZER
     # ================================================================
@@ -278,6 +290,9 @@ class AWSNormalizer(Normalizer):
         # Region
         region = records.get("awsRegion")
         
+        # ===== THREAT INTELLIGENCE =====
+        threat_intel = self._get_threat_intel(actor_ip)
+        
         # Severity (S3 events are typically low risk)
         severity = "LOW"
         severity_score = 1
@@ -288,6 +303,13 @@ class AWSNormalizer(Normalizer):
             severity = "MEDIUM"
             severity_score = 4
             severity_reason = "S3 object deletion - potential data loss"
+            
+            # Increase severity if malicious IP
+            if threat_intel and threat_intel.get("is_malicious", False):
+                severity = "HIGH"
+                severity_score = 50
+                severity_reason = "S3 object deletion from malicious IP"
+                
         elif "Put" in event_name:
             severity = "LOW"
             severity_score = 1
@@ -327,6 +349,7 @@ class AWSNormalizer(Normalizer):
             tags=["s3", "data_operation"],
             related_events=[],
             metadata={"configuration_id": s3.get("configurationId")},
+            threat_intel=threat_intel,
             raw_event=data,
         )
     
@@ -343,6 +366,10 @@ class AWSNormalizer(Normalizer):
         actor = user_identity.get("userName", "unknown")
         event_name = data.get("eventName", data.get("EventName", "unknown"))
         
+        # ===== THREAT INTELLIGENCE =====
+        actor_ip = data.get("sourceIPAddress")
+        threat_intel = self._get_threat_intel(actor_ip)
+        
         return NormalizedEvent(
             event_id=f"acip-{uuid.uuid4().hex[:12]}",
             provider="aws",
@@ -354,7 +381,7 @@ class AWSNormalizer(Normalizer):
             actor=actor,
             actor_type="unknown",
             actor_arn=user_identity.get("arn"),
-            actor_ip=data.get("sourceIPAddress"),
+            actor_ip=actor_ip,
             resource="unknown",
             resource_type="unknown",
             resource_details={},
@@ -371,6 +398,7 @@ class AWSNormalizer(Normalizer):
             tags=[],
             related_events=[],
             metadata={"note": "Generic AWS normalization - review raw event"},
+            threat_intel=threat_intel,
             raw_event=data,
         )
     
@@ -386,11 +414,14 @@ class AWSNormalizer(Normalizer):
         request_params: Dict,
         is_read_only: bool,
         data: Dict,
+        threat_intel: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Context-aware severity determination for Risk Engine.
         """
         try:
+            reasons = []
+            
             # 1. Event Type Base Score
             event_scores = {
                 "DeleteTrail": 40,
@@ -424,8 +455,9 @@ class AWSNormalizer(Normalizer):
             
             # Get base score
             base_score = event_scores.get(event_name, 5)
+            reasons.append(f"Event: {event_name} (base: {base_score})")
             
-            # ✅ FORCE INTEGER
+            # FORCE INTEGER
             try:
                 base_score = int(base_score)
             except (TypeError, ValueError):
@@ -441,8 +473,9 @@ class AWSNormalizer(Normalizer):
                 "unknown": 1.0,
             }
             modifier = identity_modifiers.get(identity_type, 1.0)
+            reasons.append(f"Identity: {identity_type} ({modifier}x)")
             
-            # ✅ FORCE FLOAT
+            # FORCE FLOAT
             try:
                 modifier = float(modifier)
             except (TypeError, ValueError):
@@ -451,6 +484,7 @@ class AWSNormalizer(Normalizer):
             # 3. Read-only
             if is_read_only:
                 modifier *= 0.7
+                reasons.append("Read-only operation (0.7x)")
             
             # 4. Public IP
             if actor_ip and not (
@@ -462,6 +496,7 @@ class AWSNormalizer(Normalizer):
                 ".amazonaws" in actor_ip
             ):
                 modifier *= 1.3
+                reasons.append("Public IP (1.3x)")
             
             # 5. Off-hours
             try:
@@ -471,14 +506,27 @@ class AWSNormalizer(Normalizer):
                     hour = dt.hour
                     if hour < 6 or hour > 22:
                         modifier *= 1.5
+                        reasons.append("Off-hours activity (1.5x)")
             except Exception:
                 pass
+
+            # ===== 6. THREAT INTELLIGENCE =====
+            if threat_intel and threat_intel.get("checked", False):
+                modifier *= threat_intel["modifier"]
+                is_malicious = threat_intel.get("is_malicious", False)
+                confidence = threat_intel.get("confidence", 0)
+                categories = threat_intel.get("categories", [])
+                
+                if is_malicious:
+                    reasons.append(f"Malicious IP (AbuseIPDB: {confidence}%, categories: {', '.join(categories[:3])}) - {threat_intel['modifier']}x")
+                elif confidence > 50:
+                    reasons.append(f"Suspicious IP (AbuseIPDB: {confidence}%) - {threat_intel['modifier']}x")
             
-            # ✅ CALCULATE FINAL SCORE
+            # CALCULATE FINAL SCORE
             final_score = int(base_score * modifier)
             final_score = max(0, min(100, final_score))
             
-            # ✅ FORCE INTEGER FOR SEVERITY_SCORE
+            # FORCE INTEGER FOR SEVERITY_SCORE
             severity_score = int(final_score)
             
             # Determine severity
@@ -493,13 +541,141 @@ class AWSNormalizer(Normalizer):
             else:
                 severity = "INFO"
             
-            return severity, severity_score, f"Base: {base_score} | Modifier: {modifier:.1f}x → Score: {severity_score}"
+            # Build the severity reason with all factors
+            severity_reason = f"Base: {base_score} | Modifier: {modifier:.1f}x | Score: {severity_score} | Factors: {', '.join(reasons)}"
+            
+            return severity, severity_score, severity_reason
             
         except Exception as e:
             logger.error(f"Error in severity calculation: {e}")
-            # ✅ Return valid types
             return "LOW", 0, f"Error: {str(e)}"
-    
+
+    def _get_threat_intel(self, actor_ip: Optional[str]) -> Optional[Dict[str, Any]]:
+        """
+        Get threat intelligence for an IP address.
+        Returns None if no threat intel available.
+        """
+        logger.info(f"🔍 _get_threat_intel called with actor_ip: {actor_ip}")
+        
+        if not actor_ip:
+            logger.info("   ❌ actor_ip is None or empty")
+            return {
+                "checked": False,
+                "is_malicious": False,
+                "reason": "No IP address provided",
+            }
+        
+        # Skip private IPs
+        if self._is_private_ip(actor_ip):
+            logger.info(f"   ❌ {actor_ip} is private/internal")
+            return {
+                "checked": False,
+                "is_malicious": False,
+                "reason": "Private/internal IP - threat intel not applicable",
+            }
+        
+        # Skip domain names (not IP addresses)
+        if self._is_domain_name(actor_ip):
+            logger.info(f"   ❌ {actor_ip} is a domain name")
+            return {
+                "checked": False,
+                "is_malicious": False,
+                "reason": f"Domain name '{actor_ip}' - threat intel requires IP address",
+            }
+        
+        logger.info(f"   ✅ {actor_ip} is a valid public IP, checking threat intel...")
+        
+        try:
+            manager = ThreatIntelManager()
+            logger.info("   ✅ ThreatIntelManager imported successfully")
+            
+            result = manager.get_ip_reputation(actor_ip)
+            logger.info(f"   ✅ Threat intel result: {result}")
+            
+            if result and result.get("checked", False):
+                logger.info("   ✅ Threat intel found!")
+                return {
+                    "checked": True,
+                    "is_malicious": result.get("is_malicious", False),
+                    "provider": result.get("provider"),
+                    "confidence": result.get("confidence", 0),
+                    "modifier": result.get("modifier", 1.0),
+                    "categories": result.get("categories", []),
+                    "details": result.get("details", {}),
+                }
+            else:
+                logger.info("   ❌ Threat intel result returned 'checked': False")
+                
+        except ImportError as e:
+            logger.error(f"   ❌ Import error: {e}")
+        except Exception as e:
+            logger.error(f"   ❌ Threat intel lookup failed: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return {
+            "checked": False,
+            "is_malicious": False,
+            "reason": "No threat intelligence available or lookup failed",
+        }
+
+
+    def _is_domain_name(self, value: str) -> bool:
+        """
+        Check if a string is a domain name (not an IP address).
+        
+        Examples:
+        - "resource-explorer-2.amazonaws.com" → True (domain)
+        - "8.8.8.8" → False (IP address)
+        - "203.0.113.1" → False (IP address)
+        """
+        if not value:
+            return True
+        
+        # Check if it's an IP address (contains only numbers and dots)
+        parts = value.split(".")
+        
+        # If it has 4 parts and all are numbers, it's an IP
+        if len(parts) == 4:
+            for part in parts:
+                if not part.isdigit():
+                    return True  # Contains non-digit, so it's a domain
+            return False  # All digits, so it's an IP
+        
+        # If it has 6 parts with colons, it's IPv6
+        if ":" in value:
+            return False
+        
+        # Otherwise, it's a domain name
+        return True
+
+    def _is_private_ip(self, ip: str) -> bool:
+        """Check if IP is private/internal or a domain name"""
+        if not ip:
+            return True
+        
+        # Domain names are not IPs
+        if "." in ip and not all(part.isdigit() for part in ip.split(".") if part):
+            return True
+        
+        private_ranges = [
+            "10.",
+            "192.168.",
+            "172.16.", "172.17.", "172.18.", "172.19.",
+            "172.20.", "172.21.", "172.22.", "172.23.",
+            "172.24.", "172.25.", "172.26.", "172.27.",
+            "172.28.", "172.29.", "172.30.", "172.31.",
+            "127.",
+            "169.254.",
+            "::1",
+        ]
+        
+        for prefix in private_ranges:
+            if ip.startswith(prefix):
+                return True
+        
+        return False
+
     def _generate_enhanced_tags(
         self,
         event_name: str,
@@ -508,6 +684,7 @@ class AWSNormalizer(Normalizer):
         request_params: Dict,
         is_read_only: bool,
         data: Dict,
+        threat_intel: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Generate enhanced tags for Risk Engine"""
         tags = []
@@ -534,6 +711,13 @@ class AWSNormalizer(Normalizer):
             actor_ip == "127.0.0.1"
         ):
             tags.append("public_ip")
+        
+        # Threat intelligence tags
+        if threat_intel and threat_intel.get("checked", False):
+            if threat_intel.get("is_malicious", False):
+                tags.append("malicious_ip")
+            if threat_intel.get("confidence", 0) >= 75:
+                tags.append("high_confidence_threat")
         
         # Read-only
         if is_read_only:

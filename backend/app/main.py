@@ -5,6 +5,11 @@ from .api.routes import incidents  # Existing incident endpoints
 from .core.database import engine, Base
 from .models.incident import IncidentModel  # Import to create table
 from .api.routes.debug import cloudtrail, cloudtrail_normalized
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 
 # Create database tables
 Base.metadata.create_all(bind=engine)

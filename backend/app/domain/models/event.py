@@ -59,11 +59,13 @@ class NormalizedEvent:
     severity_reason: str
     timestamp: datetime
     
+    
     # ===== OPTIONAL FIELDS (With defaults) =====
     actor_arn: Optional[str] = None
     actor_ip: Optional[str] = None
     region: Optional[str] = None
     account_id: Optional[str] = None
+    threat_intel: Optional[Dict[str, Any]] = None
     
     # ===== DICT FIELDS (With defaults) =====
     resource_details: Dict[str, Any] = field(default_factory=dict)
@@ -100,6 +102,7 @@ class NormalizedEvent:
             "severity": self.severity,
             "severity_score": self.severity_score,
             "severity_reason": self.severity_reason,
+            "threat_intel": self.threat_intel,
             "timestamp": self.timestamp.isoformat(),
             "region": self.region,
             "account_id": self.account_id,
