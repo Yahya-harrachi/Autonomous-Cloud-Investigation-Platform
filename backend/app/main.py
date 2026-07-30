@@ -1,15 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.routes import ingestion
-from .api.routes import incidents  # Existing incident endpoints
-from .core.database import engine, Base
-from .models.incident import IncidentModel  # Import to create table
-from .api.routes.debug import cloudtrail, cloudtrail_normalized
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
+from .api.routes import ingestion
+from .api.routes import incidents
+from .api.routes import rules  
+from .api.routes.debug import cloudtrail, cloudtrail_normalized
+from .core.database import engine, Base
+from .models.incident import IncidentModel
+from .domain.models.risk_rule import RuleModel 
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -32,9 +33,9 @@ app.add_middleware(
 # Include routers
 app.include_router(ingestion.router)
 app.include_router(incidents.router)
+app.include_router(rules.router)  
 app.include_router(cloudtrail.router)
-app.include_router(cloudtrail_normalized.router)  
-
+app.include_router(cloudtrail_normalized.router)
 
 @app.get("/")
 async def root():

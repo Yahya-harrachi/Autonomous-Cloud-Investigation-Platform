@@ -421,72 +421,108 @@ class AWSNormalizer(Normalizer):
         """
         try:
             reasons = []
+            base_score = 5  # Default base score
+            modifier = 1.0
             
-            # 1. Event Type Base Score
-            event_scores = {
-                "DeleteTrail": 40,
-                "StopLogging": 40,
-                "AttachUserPolicy": 40,
-                "AttachRolePolicy": 35,
-                "PutBucketPolicy": 35,
-                "CreateUser": 30,
-                "CreateRole": 30,
-                "DeleteUser": 25,
-                "DeleteRole": 25,
-                "AuthorizeSecurityGroupIngress": 35,
-                "RevokeSecurityGroupIngress": 25,
-                "ConsoleLogin": 20,
-                "AssumeRole": 15,
-                "CreateKeyPair": 10,
-                "RunInstances": 20,
-                "TerminateInstances": 25,
-                "CreateBucket": 10,
-                "DeleteBucket": 20,
-                "CreateAccessKey": 25,
-                "DeleteAccessKey": 20,
-                "GetCallerIdentity": 5,
-                "ListImages": 5,
-                "DescribeSpotFleetRequests": 5,
-                "ListVoiceConnectors": 5,
-                "ListTopicRules": 5,
-                "DescribeReplicationSubnetGroups": 5,
-                "LookupEvents": 5,
-            }
-            
-            # Get base score
-            base_score = event_scores.get(event_name, 5)
-            reasons.append(f"Event: {event_name} (base: {base_score})")
-            
-            # FORCE INTEGER
+            # ================================================================
+            # 1. LOAD RULES FROM DATABASE (NEW!)
+            # ================================================================
             try:
-                base_score = int(base_score)
-            except (TypeError, ValueError):
-                base_score = 5
-            
-            # 2. Identity Modifier
-            identity_modifiers = {
-                "root": 2.0,
-                "assumedrole": 1.5,
-                "federateduser": 1.3,
-                "user": 1.0,
-                "service_account": 0.8,
-                "unknown": 1.0,
-            }
-            modifier = identity_modifiers.get(identity_type, 1.0)
-            reasons.append(f"Identity: {identity_type} ({modifier}x)")
-            
-            # FORCE FLOAT
-            try:
-                modifier = float(modifier)
-            except (TypeError, ValueError):
+                from sqlalchemy.orm import Session
+                from ...core.database import SessionLocal
+                from ...risk.rules.rule_service import RuleService
+                
+                db = SessionLocal()
+                rule_service = RuleService(db)
+                
+                # Get event type score from rules
+                event_rule = rule_service.get_event_type_score(event_name)
+                if event_rule:
+                    base_score = event_rule.get("base_score", 5)
+                    reasons.append(f"Rule: {event_rule.get('rule_name')} (base: {base_score})")
+                else:
+                    # Fallback to hardcoded scores if no rule exists
+                    event_scores = {
+                        "DeleteTrail": 40,
+                        "StopLogging": 40,
+                        "AttachUserPolicy": 40,
+                        "AttachRolePolicy": 35,
+                        "PutBucketPolicy": 35,
+                        "CreateUser": 30,
+                        "CreateRole": 30,
+                        "DeleteUser": 25,
+                        "DeleteRole": 25,
+                        "AuthorizeSecurityGroupIngress": 35,
+                        "RevokeSecurityGroupIngress": 25,
+                        "ConsoleLogin": 20,
+                        "AssumeRole": 15,
+                        "CreateKeyPair": 10,
+                        "RunInstances": 20,
+                        "TerminateInstances": 25,
+                        "CreateBucket": 10,
+                        "DeleteBucket": 20,
+                        "CreateAccessKey": 25,
+                        "DeleteAccessKey": 20,
+                        "GetCallerIdentity": 5,
+                        "ListImages": 5,
+                        "DescribeSpotFleetRequests": 5,
+                        "ListVoiceConnectors": 5,
+                        "ListTopicRules": 5,
+                        "DescribeReplicationSubnetGroups": 5,
+                        "LookupEvents": 5,
+                    }
+                    base_score = event_scores.get(event_name, 5)
+                    reasons.append(f"Fallback: {event_name} (base: {base_score})")
+                
+                # Get identity modifier from rules
+                identity_modifier = rule_service.get_identity_modifier(identity_type)
+                if identity_modifier is not None:
+                    modifier *= identity_modifier
+                    reasons.append(f"Identity rule: {identity_type} ({identity_modifier}x)")
+                else:
+                    # Fallback to hardcoded modifiers
+                    identity_modifiers = {
+                        "root": 2.0,
+                        "assumedrole": 1.5,
+                        "federateduser": 1.3,
+                        "user": 1.0,
+                        "service_account": 0.8,
+                        "unknown": 1.0,
+                    }
+                    modifier *= identity_modifiers.get(identity_type, 1.0)
+                    reasons.append(f"Identity: {identity_type} ({identity_modifiers.get(identity_type, 1.0)}x)")
+                
+                # Get context modifiers from rules
+                context_rules = rule_service.get_context_modifiers(data)
+                for context_rule in context_rules:
+                    modifier *= context_rule["modifier"]
+                    reasons.append(f"Context rule: {context_rule['rule_name']} ({context_rule['modifier']}x)")
+                
+                db.close()
+                
+            except Exception as e:
+                logger.warning(f"Failed to load rules from database: {e}")
+                # Fallback to hardcoded values
+                event_scores = {
+                    "DeleteTrail": 40,
+                    "ConsoleLogin": 20,
+                    "AssumeRole": 15,
+                    "GetCallerIdentity": 5,
+                    "LookupEvents": 5,
+                }
+                base_score = event_scores.get(event_name, 5)
                 modifier = 1.0
             
-            # 3. Read-only
+            # ================================================================
+            # 2. READ-ONLY MODIFIER
+            # ================================================================
             if is_read_only:
                 modifier *= 0.7
                 reasons.append("Read-only operation (0.7x)")
             
-            # 4. Public IP
+            # ================================================================
+            # 3. PUBLIC IP MODIFIER
+            # ================================================================
             if actor_ip and not (
                 actor_ip.startswith("192.168.") or
                 actor_ip.startswith("10.") or
@@ -498,7 +534,9 @@ class AWSNormalizer(Normalizer):
                 modifier *= 1.3
                 reasons.append("Public IP (1.3x)")
             
-            # 5. Off-hours
+            # ================================================================
+            # 4. OFF-HOURS MODIFIER
+            # ================================================================
             try:
                 event_time = data.get("eventTime", "")
                 if event_time:
@@ -509,8 +547,10 @@ class AWSNormalizer(Normalizer):
                         reasons.append("Off-hours activity (1.5x)")
             except Exception:
                 pass
-
-            # ===== 6. THREAT INTELLIGENCE =====
+            
+            # ================================================================
+            # 5. THREAT INTELLIGENCE
+            # ================================================================
             if threat_intel and threat_intel.get("checked", False):
                 modifier *= threat_intel["modifier"]
                 is_malicious = threat_intel.get("is_malicious", False)
@@ -522,14 +562,14 @@ class AWSNormalizer(Normalizer):
                 elif confidence > 50:
                     reasons.append(f"Suspicious IP (AbuseIPDB: {confidence}%) - {threat_intel['modifier']}x")
             
-            # CALCULATE FINAL SCORE
+            # ================================================================
+            # 6. CALCULATE FINAL SCORE
+            # ================================================================
             final_score = int(base_score * modifier)
             final_score = max(0, min(100, final_score))
             
-            # FORCE INTEGER FOR SEVERITY_SCORE
             severity_score = int(final_score)
             
-            # Determine severity
             if final_score >= 70:
                 severity = "CRITICAL"
             elif final_score >= 50:
@@ -541,7 +581,6 @@ class AWSNormalizer(Normalizer):
             else:
                 severity = "INFO"
             
-            # Build the severity reason with all factors
             severity_reason = f"Base: {base_score} | Modifier: {modifier:.1f}x | Score: {severity_score} | Factors: {', '.join(reasons)}"
             
             return severity, severity_score, severity_reason
