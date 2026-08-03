@@ -18,22 +18,6 @@ services:
       timeout: 5s
       retries: 5
 
-  localstack:
-    image: localstack/localstack:1.4.0
-    container_name: acip-localstack
-    ports:
-      - "4566:4566"
-    environment:
-      - SERVICES=s3,events,sqs
-      - AWS_DEFAULT_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=test
-      - AWS_SECRET_ACCESS_KEY=test
-      - EDGE_PORT=4566
-      - DOCKER_HOST=unix:///var/run/docker.sock
-    volumes:
-      - localstack_data:/var/lib/localstack
-      - /var/run/docker.sock:/var/run/docker.sock
-
   backend:
     build:
       context: ./backend
@@ -52,8 +36,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      localstack:
-        condition: service_started
+      
 
   frontend:
     build:
@@ -73,4 +56,4 @@ services:
 
 volumes:
   postgres_data:
-  localstack_data:
+  
