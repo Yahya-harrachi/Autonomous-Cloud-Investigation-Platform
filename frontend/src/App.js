@@ -5,7 +5,9 @@ import Dashboard from './pages/Dashboard';
 import IncidentList from './pages/IncidentList';
 import IncidentDetail from './pages/IncidentDetail';
 import CreateIncident from './pages/CreateIncident';
-import EventsViewer from './pages/EventsViewer'; 
+import EventsViewer from './pages/EventsViewer';
+import RuleList from './pages/RuleList';        
+import RuleForm from './pages/RuleForm';        
 
 function App() {
   return (
@@ -18,6 +20,9 @@ function App() {
           <Route path="/incidents/new" element={<CreateIncident />} />
           <Route path="/incidents/:id" element={<IncidentDetail />} />
           <Route path="/events" element={<EventsViewer />} />
+          <Route path="/rules" element={<RuleList />} />           
+          <Route path="/rules/new" element={<RuleForm />} />       
+          <Route path="/rules/:id/edit" element={<RuleForm />} />  
         </Routes>
       </div>
     </Router>

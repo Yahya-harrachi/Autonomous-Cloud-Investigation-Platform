@@ -1,5 +1,5 @@
 """
-Risk Rule Model - Configurable rules for SOC analysts
+Risk Rule Model - Fully dynamic
 """
 from sqlalchemy import Column, String, DateTime, Text, JSON, Boolean, Integer, Float, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
@@ -10,16 +10,15 @@ import enum
 
 
 class RuleType(str, enum.Enum):
-    """Types of rules"""
     EVENT_TYPE = "event_type"
     IDENTITY = "identity"
     CONTEXT = "context"
     THREAT_INTEL = "threat_intel"
-    RESOURCE = "resource"
+    CUSTOM = "custom"
 
 
 class RuleModel(Base):
-    """SQLAlchemy model for risk rules"""
+    """SQLAlchemy model for risk rules - Fully dynamic"""
     __tablename__ = "risk_rules"
 
     # ===== IDENTIFICATION =====
@@ -29,20 +28,29 @@ class RuleModel(Base):
     
     # ===== STATUS =====
     enabled = Column(Boolean, default=True)
-    priority = Column(Integer, default=100)  # Lower number = higher priority
+    priority = Column(Integer, default=100)
     
     # ===== RULE TYPE =====
     rule_type = Column(SQLEnum(RuleType), nullable=False)
     
-    # ===== RULE LOGIC =====
-    condition = Column(JSON, nullable=False)  # JSON structure for rule conditions
-    base_score = Column(Integer, default=0)   # Base score contribution
-    modifier = Column(Float, default=1.0)     # Multiplier
+    # ===== DYNAMIC STORAGE =====
+    # Store all rule parameters (fully dynamic)
+    parameters = Column(JSON, default={})
     
-    # ===== TIMING =====
+    # ===== EVALUATION =====
+    # Condition as JSON (can be evaluated dynamically)
+    condition = Column(JSON, nullable=False)
+    
+    # ===== SCORING =====
+    base_score = Column(Integer, default=0)
+    modifier = Column(Float, default=1.0)
+    
+    # ===== METADATA =====
+    tags = Column(JSON, default=[])  # JSON array
+    created_by = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    created_by = Column(UUID(as_uuid=True), nullable=True)  # User who created the rule
+    version = Column(Integer, default=1)
     
     def to_dict(self):
         """Convert to dictionary for API responses"""
@@ -53,10 +61,13 @@ class RuleModel(Base):
             "enabled": self.enabled,
             "priority": self.priority,
             "rule_type": self.rule_type.value if self.rule_type else None,
+            "parameters": self.parameters or {},
             "condition": self.condition or {},
             "base_score": self.base_score or 0,
             "modifier": self.modifier or 1.0,
+            "tags": self.tags or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "created_by": str(self.created_by) if self.created_by else None,
+            "version": self.version,
         }

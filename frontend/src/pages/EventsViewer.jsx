@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { debugAPI } from '../services/api';
 import SeverityBadge from '../components/SeverityBadge';
-import StatusBadge from '../components/StatusBadge';
 
 const EventsViewer = () => {
   const [events, setEvents] = useState([]);
@@ -17,27 +16,26 @@ const EventsViewer = () => {
   });
   const [lastUpdated, setLastUpdated] = useState(null);
   const [healthStatus, setHealthStatus] = useState(null);
-  
+
   const intervalRef = useRef(null);
 
-  // Check CloudTrail health on mount
   useEffect(() => {
     checkHealth();
+    fetchEvents();
   }, []);
 
-  // Auto-refresh effect
   useEffect(() => {
     if (autoRefresh) {
       intervalRef.current = setInterval(() => {
         fetchEvents();
-      }, 30000); // Refresh every 30 seconds
+      }, 30000);
     } else {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
     }
-    
+
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -59,7 +57,7 @@ const EventsViewer = () => {
   const fetchEvents = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       const result = await debugAPI.getCloudTrailEvents(
         filters.count,
@@ -67,12 +65,15 @@ const EventsViewer = () => {
         filters.username || null,
         filters.hoursBack
       );
-      
-      setEvents(result.events || []);
-      setTotalEvents(result.total_events || 0);
+
+      // ✅ Use ALL events from the backend
+      const eventsData = result.events || [];
+      setEvents(eventsData);
+      setTotalEvents(result.total_normalized || eventsData.length);
       setLastUpdated(new Date());
-      
-      // Update health status if available
+
+      console.log(`✅ Loaded ${eventsData.length} normalized events`);
+
       if (result.account_id) {
         setHealthStatus({
           status: 'healthy',
@@ -82,7 +83,7 @@ const EventsViewer = () => {
       }
     } catch (err) {
       console.error('Error fetching events:', err);
-      setError(err.response?.data?.detail || 'Failed to fetch CloudTrail events. Make sure AWS is configured correctly.');
+      setError(err.response?.data?.detail || 'Failed to fetch CloudTrail events.');
       setEvents([]);
     } finally {
       setLoading(false);
@@ -97,33 +98,14 @@ const EventsViewer = () => {
     fetchEvents();
   };
 
-  const getSeverityFromEvent = (event) => {
-    // Try to determine severity from event
-    const eventName = event.event_name || '';
-    const severityMap = {
-      'ConsoleLogin': 'MEDIUM',
-      'RunInstances': 'HIGH',
-      'TerminateInstances': 'HIGH',
-      'CreateBucket': 'LOW',
-      'DeleteBucket': 'MEDIUM',
-      'PutBucketPolicy': 'HIGH',
-      'CreateKeyPair': 'MEDIUM',
-      'DeleteKeyPair': 'LOW',
-      'AuthorizeSecurityGroupIngress': 'CRITICAL',
-      'RevokeSecurityGroupIngress': 'MEDIUM',
-      'CreateUser': 'HIGH',
-      'DeleteUser': 'MEDIUM',
-      'AttachUserPolicy': 'CRITICAL',
-      'DetachUserPolicy': 'HIGH',
-    };
-    
-    return severityMap[eventName] || 'LOW';
-  };
-
   const formatTime = (isoString) => {
     if (!isoString) return 'N/A';
-    const date = new Date(isoString);
-    return date.toLocaleString();
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleString();
+    } catch {
+      return isoString;
+    }
   };
 
   return (
@@ -133,7 +115,7 @@ const EventsViewer = () => {
         <div>
           <h1 className="text-3xl font-bold">CloudTrail Events</h1>
           <p className="text-sm text-gray-500">
-            Real-time events from AWS CloudTrail
+            Normalized events from AWS CloudTrail with severity scoring
           </p>
         </div>
         <div className="flex items-center space-x-2">
@@ -238,9 +220,8 @@ const EventsViewer = () => {
           </div>
         </div>
 
-        {/* Status bar */}
         <div className="mt-3 flex justify-between text-sm text-gray-500 border-t pt-2">
-          <span>Total: {totalEvents} events</span>
+          <span>Total: {totalEvents} normalized events</span>
           <span>
             Filters: {filters.eventName ? `Event: ${filters.eventName}` : 'All events'}
             {filters.username && ` | User: ${filters.username}`}
@@ -252,96 +233,88 @@ const EventsViewer = () => {
         </div>
       </div>
 
-      {/* Error message */}
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
           <strong>Error:</strong> {error}
         </div>
       )}
 
-      {/* Events List */}
       {loading ? (
         <div className="text-center py-12">
-          <div className="text-gray-500">Loading CloudTrail events...</div>
+          <div className="text-gray-500">Loading normalized events...</div>
         </div>
       ) : events.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-12 text-center text-gray-500">
           <div className="text-4xl mb-4">📭</div>
-          <p>No CloudTrail events found</p>
+          <p>No normalized events found</p>
           <p className="text-sm mt-2">
-            {error ? 'Check your AWS configuration' : 'Try adjusting filters or generating some activity'}
+            {error ? 'Check your AWS configuration' : 'Try adjusting filters'}
           </p>
-          {!error && (
-            <button
-              onClick={() => {
-                // Generate some activity
-                window.open('https://console.aws.amazon.com/s3/home', '_blank');
-              }}
-              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
-            >
-              Generate Activity in AWS
-            </button>
-          )}
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className="divide-y divide-gray-200">
-            {events.map((event, index) => {
-              const severity = getSeverityFromEvent(event);
-              const summary = event.summary || {};
-              
-              return (
-                <div key={event.event_id || index} className="px-6 py-4 hover:bg-gray-50">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-3">
-                        <span className="font-medium text-gray-900">
-                          {event.event_name || 'Unknown Event'}
-                        </span>
-                        <SeverityBadge severity={severity} />
-                        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                          {event.event_source || 'N/A'}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex items-center space-x-4 text-sm text-gray-500">
-                        <span>👤 {event.username || 'N/A'}</span>
-                        {summary.source_ip && (
-                          <span>🌐 {summary.source_ip}</span>
-                        )}
-                        {event.region && (
-                          <span>🌍 {event.region}</span>
-                        )}
-                        <span>🕐 {formatTime(event.event_time)}</span>
-                      </div>
-                      {/* Resources */}
-                      {event.resources && event.resources.length > 0 && (
-                        <div className="mt-1 text-xs text-gray-400">
-                          Resources: {event.resources.map(r => r.ResourceName || r.ARN).filter(Boolean).join(', ')}
-                        </div>
-                      )}
+            {events.map((event, index) => (
+              <div key={event.event_id || index} className="px-6 py-4 hover:bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-3">
+                      <span className="font-medium text-gray-900">
+                        {event.event_name || 'Unknown Event'}
+                      </span>
+                      <SeverityBadge severity={event.severity || 'INFO'} />
+                      <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                        {event.provider_type || 'N/A'}
+                      </span>
                     </div>
-                    <button
-                      onClick={() => {
-                        // View event details - expand/show JSON
-                        console.log('Event details:', event);
-                        alert(JSON.stringify(event.cloudtrail_event, null, 2));
-                      }}
-                      className="text-blue-600 hover:text-blue-800 text-sm"
-                    >
-                      View JSON
-                    </button>
+
+                    <div className="mt-1 flex items-center space-x-4 text-sm text-gray-500">
+                      <span>👤 {event.actor || 'N/A'}</span>
+                      {/* ✅ Always show IP with fallback */}
+                      <span>🌐 {event.actor_ip || 'N/A'}</span>
+                      {/* ✅ Always show region with fallback */}
+                      <span>🌍 {event.region || 'N/A'}</span>
+                      <span>🕐 {formatTime(event.timestamp)}</span>
+                    </div>
+
+                    {event.severity_score !== undefined && (
+                      <div className="mt-1 text-sm">
+                        <span className="font-medium">
+                          Score: {event.severity_score}/100
+                        </span>
+                        {event.severity_reason && (
+                          <span className="text-xs text-gray-400 ml-2">
+                            {event.severity_reason.substring(0, 100)}...
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {event.resource && event.resource !== 'unknown' && (
+                      <div className="mt-1 text-xs text-gray-400">
+                        Resource: {event.resource}
+                      </div>
+                    )}
                   </div>
+
+                  <button
+                    onClick={() => {
+                      console.log('Event details:', event);
+                      alert(JSON.stringify(event, null, 2));
+                    }}
+                    className="text-blue-600 hover:text-blue-800 text-sm ml-4"
+                  >
+                    View JSON
+                  </button>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {/* Footer */}
       <div className="mt-4 text-xs text-gray-400 text-center">
-        Events retrieved from AWS CloudTrail. Only {events.length} events shown.
-        Use filters to narrow down results.
+        Normalized events from AWS CloudTrail with severity scoring from the Risk Engine.
       </div>
     </div>
   );

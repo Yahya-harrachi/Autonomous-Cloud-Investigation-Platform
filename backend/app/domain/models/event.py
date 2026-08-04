@@ -59,13 +59,17 @@ class NormalizedEvent:
     severity_reason: str
     timestamp: datetime
     
-    
     # ===== OPTIONAL FIELDS (With defaults) =====
     actor_arn: Optional[str] = None
     actor_ip: Optional[str] = None
     region: Optional[str] = None
     account_id: Optional[str] = None
     threat_intel: Optional[Dict[str, Any]] = None
+    
+    # ===== CONTEXT FIELDS FOR RULES =====
+    hour: Optional[int] = None
+    day_of_week: Optional[str] = None
+    is_read_only: Optional[bool] = None
     
     # ===== DICT FIELDS (With defaults) =====
     resource_details: Dict[str, Any] = field(default_factory=dict)
@@ -79,8 +83,9 @@ class NormalizedEvent:
     related_events: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for storage/display"""
+        """Convert to dictionary for storage/display and RULE EVALUATION"""
         return {
+            # Identification
             "event_id": self.event_id,
             "provider": self.provider,
             "provider_type": self.provider_type,
@@ -88,10 +93,14 @@ class NormalizedEvent:
             "event_name": self.event_name,
             "event_description": self.event_description,
             "event_category": self.event_category,
+            
+            # Who
             "actor": self.actor,
             "actor_type": self.actor_type,
             "actor_arn": self.actor_arn,
             "actor_ip": self.actor_ip,
+            
+            # What
             "resource": self.resource,
             "resource_type": self.resource_type,
             "resource_details": self.resource_details,
@@ -99,16 +108,30 @@ class NormalizedEvent:
             "action_details": self.action_details,
             "result": self.result,
             "result_details": self.result_details,
+            
+            # Severity
             "severity": self.severity,
             "severity_score": self.severity_score,
             "severity_reason": self.severity_reason,
-            "threat_intel": self.threat_intel,
+            
+            # Timing & Context (CRITICAL FOR RULES)
             "timestamp": self.timestamp.isoformat(),
+            "hour": self.hour,
+            "day_of_week": self.day_of_week,
+            "is_read_only": self.is_read_only,
+            
+            # Location
             "region": self.region,
             "account_id": self.account_id,
+            
+            # Context
             "tags": self.tags,
             "related_events": self.related_events,
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "threat_intel": self.threat_intel,
+            
+            # Identity (for rules)
+            "identity_type": self.metadata.get("identity_type") if self.metadata else None,
         }
     
     @property

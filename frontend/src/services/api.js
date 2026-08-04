@@ -41,7 +41,7 @@ export const incidentAPI = {
 export const debugAPI = {
   // Get CloudTrail events
   getCloudTrailEvents: async (count = 50, eventName = null, username = null, hoursBack = 24) => {
-    let url = `/debug/cloudtrail/events?count=${count}&hours_back=${hoursBack}`;
+    let url = `/debug/cloudtrail/normalized?count=${count}&hours_back=${hoursBack}`;
     if (eventName) {
       url += `&event_name=${encodeURIComponent(eventName)}`;
     }
@@ -54,7 +54,71 @@ export const debugAPI = {
   
   // Check CloudTrail health
   checkCloudTrailHealth: async () => {
-    const response = await api.get('/debug/cloudtrail/health');
+    const response = await api.get('/debug/cloudtrail/normalized/health');
+    return response.data;
+  },
+};
+
+// ===== RULE API =====
+export const ruleAPI = {
+  // Get all rules
+  getAll: async (enabledOnly = false, ruleType = null) => {
+    let url = `/rules/?enabled_only=${enabledOnly}`;
+    if (ruleType) {
+      url += `&rule_type=${ruleType}`;
+    }
+    const response = await api.get(url);
+    return response.data;
+  },
+
+  // Get a single rule
+  getById: async (id) => {
+    const response = await api.get(`/rules/${id}`);
+    return response.data;
+  },
+
+  // Create a rule
+  create: async (data) => {
+    const response = await api.post('/rules/', data);
+    return response.data;
+  },
+
+  // Update a rule
+  update: async (id, data) => {
+    const response = await api.put(`/rules/${id}`, data);
+    return response.data;
+  },
+
+  // Delete a rule
+  delete: async (id) => {
+    const response = await api.delete(`/rules/${id}`);
+    return response.data;
+  },
+
+  // Enable a rule
+  enable: async (id) => {
+    const response = await api.patch(`/rules/${id}/enable`);
+    return response.data;
+  },
+
+  // Disable a rule
+  disable: async (id) => {
+    const response = await api.patch(`/rules/${id}/disable`);
+    return response.data;
+  },
+
+  // Test a rule
+  test: async (rule, eventData) => {
+    const response = await api.post('/rules/test', {
+      rule: rule,
+      event_data: eventData,
+    });
+    return response.data;
+  },
+
+  // Get rule types
+  getTypes: async () => {
+    const response = await api.get('/rules/types');
     return response.data;
   },
 };
