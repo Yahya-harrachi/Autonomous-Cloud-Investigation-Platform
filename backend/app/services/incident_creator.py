@@ -102,8 +102,12 @@ class IncidentCreator:
         title = self._generate_title(event)
         description = self._generate_description(event)
         
+        # ✅ Generate a real UUID for the incident
+        incident_uuid = uuid.uuid4()
+        incident_id = f"inc-{incident_uuid.hex[:12]}"  # For display
+        
         return Incident(
-            id=f"inc-{uuid.uuid4().hex[:12]}",
+            id=incident_id,
             title=title,
             description=description,
             status=IncidentStatus.PENDING,
@@ -133,8 +137,15 @@ class IncidentCreator:
         """Save incident to database"""
         db = SessionLocal()
         try:
+            # ✅ Extract the UUID from the incident ID
+            # incident.id format: inc-abc123def456
+            uuid_str = incident.id.replace('inc-', '')
+            # If the UUID is short (12 chars), pad it to 32 chars with zeros
+            if len(uuid_str) < 32:
+                uuid_str = uuid_str.ljust(32, '0')
+            
             db_incident = IncidentModel(
-                id=uuid.UUID(incident.id.replace('inc-', '')),
+                id=uuid.UUID(uuid_str),
                 title=incident.title,
                 description=incident.description,
                 status=IncidentStatus(incident.status.value),
@@ -149,7 +160,7 @@ class IncidentCreator:
             db.commit()
             db.refresh(db_incident)
         except Exception as e:
-            logger.error(f"Failed to save incident: {e}")
+            print(f"Failed to save incident: {e}")
             db.rollback()
             raise
         finally:

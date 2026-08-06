@@ -14,8 +14,14 @@ from ..infrastructure.clients.aws_client import AWSClient
 from ..infrastructure.normalizers.aws_normalizer import AWSNormalizer
 from ..domain.models.event import RawEvent
 from ..services.incident_creator import IncidentCreator
+from ..services.event_queue import event_queue
+from ..services.websocket_manager import websocket_manager
 
 logger = logging.getLogger(__name__)
+
+
+# Set the processor for the event queue
+event_queue.set_processor(websocket_manager)
 
 
 class SQSConsumer:
@@ -150,44 +156,45 @@ class SQSConsumer:
     def _process_message(self, message: Dict[str, Any]) -> None:
         """
         Process a single SQS message.
-        
-        Steps:
-        1. Parse message body
-        2. Normalize event
-        3. Create incident if needed
-        4. Delete message from queue
         """
         try:
             # 1. Parse message
             body = json.loads(message.get('Body', '{}'))
             receipt_handle = message.get('ReceiptHandle')
             
-            logger.debug(f"Processing message: {body.get('eventName', 'unknown')}")
+            print(f"📩 Processing message: {body.get('detail', {}).get('eventName', 'unknown')}")
             
             # 2. Create RawEvent
             raw_event = self._create_raw_event(body)
             
             # 3. Normalize
             normalized = self._normalizer.normalize(raw_event)
+            print(f"✅ Normalized: {normalized.event_name}")
             
-            # 4. Create incident (if needed)
-            incident = self._incident_creator.process_event(normalized)
+            # 4. Convert to dict for broadcasting
+            event_dict = normalized.to_dict()
             
-            if incident:
-                logger.info(f"🚨 Incident created: {incident.title} ({incident.severity})")
+            # 5. Add to event queue
+            print(f"📤 Adding to event queue: {event_dict.get('event_name')}")
+            event_queue.add_event(event_dict)
+            print(f"✅ Added to queue")
             
-            # 5. Delete message from queue
+            # 6. Create incident if needed
+            # incident = self._incident_creator.process_event(normalized)
+            # if incident:
+            #    print(f"🚨 Incident created: {incident.title}")
+            
+            # 7. Delete message from queue
             if receipt_handle:
                 self._sqs.delete_message(
                     QueueUrl=self.queue_url,
                     ReceiptHandle=receipt_handle
                 )
                 self._processed_count += 1
-                logger.debug(f"Message deleted from queue")
+                print(f"🗑️ Message deleted from queue")
             
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse message JSON: {e}")
-            # Delete malformed messages
+            print(f"❌ Failed to parse message JSON: {e}")
             receipt_handle = message.get('ReceiptHandle')
             if receipt_handle:
                 self._sqs.delete_message(
@@ -195,18 +202,16 @@ class SQSConsumer:
                     ReceiptHandle=receipt_handle
                 )
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            # Don't delete message - it will be retried
+            print(f"❌ Error processing message: {e}")
+            import traceback
+            traceback.print_exc()
             raise
     
     def _create_raw_event(self, body: Dict[str, Any]) -> RawEvent:
         """Create RawEvent from SQS message body"""
-        # Extract CloudTrail event from SQS message
-        # EventBridge wraps CloudTrail events in a specific format
         detail = body.get('detail', {})
         event_time = detail.get('eventTime', '')
         
-        # Parse timestamp
         try:
             if event_time:
                 timestamp = datetime.fromisoformat(event_time.replace('Z', '+00:00'))

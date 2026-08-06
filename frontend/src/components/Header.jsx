@@ -15,8 +15,8 @@ const Header = () => {
             <Link to="/" className="hover:text-gray-300">Dashboard</Link>
             <Link to="/incidents" className="hover:text-gray-300">Incidents</Link>
             <Link to="/events" className="hover:text-gray-300">Events</Link>
+            <Link to="/realtime-events" className="hover:text-gray-300">Live Events</Link>
             <Link to="/rules" className="hover:text-gray-300">Rules</Link>  
-            <Link to="/incidents/new" className="hover:text-gray-300">New Incident</Link>
           </nav>
         </div>
       </div>

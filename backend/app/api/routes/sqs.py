@@ -40,3 +40,30 @@ async def get_sqs_status() -> Dict[str, Any]:
         return consumer.get_stats()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/broadcast-test")
+async def broadcast_test_event():
+    """Test endpoint to broadcast a test event to WebSocket"""
+    from ...services.websocket_manager import websocket_manager
+    import asyncio
+    
+    test_event = {
+        "event_id": "test-123",
+        "event_name": "TestBroadcast",
+        "actor": "test-user",
+        "severity": "INFO",
+        "severity_score": 10,
+        "timestamp": "2026-08-05T10:00:00Z",
+        "region": "us-east-1",
+        "actor_ip": "8.8.8.8",
+    }
+    
+    # Broadcast to WebSocket
+    asyncio.create_task(websocket_manager.broadcast_event(test_event))
+    
+    return {
+        "message": "Test event broadcasted",
+        "event": test_event,
+        "connections": len(websocket_manager.active_connections)
+    }
