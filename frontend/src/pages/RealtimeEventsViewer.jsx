@@ -11,6 +11,45 @@ const RealtimeEventsViewer = () => {
     total_incidents: 0,
   });
   const eventsEndRef = useRef(null);
+  
+  // ✅ Track processed events by their unique identifiers
+  const processedEventIds = useRef(new Set());
+  const processedIncidentIds = useRef(new Set());
+
+  // ✅ Generate UNIQUE event ID that identifies the EXACT event
+  const getEventId = (event) => {
+    // Priority 1: Use CloudTrail's unique eventID (best option)
+    if (event.event_id) return `event_${event.event_id}`;
+    if (event.id) return `event_${event.id}`;
+    
+    // Priority 2: Use eventName + timestamp + source IP + region + event version
+    // This ensures different events at different times are NOT skipped
+    const timestamp = event.timestamp || event.eventTime || event.time || '';
+    const eventName = event.event_name || event.eventName || 'unknown';
+    const sourceIp = event.actor_ip || event.sourceIP || 'unknown';
+    const region = event.region || event.awsRegion || 'unknown';
+    const eventVersion = event.eventVersion || event.version || '1.0';
+    
+    // Include event-specific details to avoid false duplicates
+    const eventSpecific = event.eventType || event.type || '';
+    const eventSource = event.provider || event.eventSource || '';
+    
+    // Create a unique fingerprint for this specific event
+    return `event_${eventName}_${timestamp}_${sourceIp}_${region}_${eventVersion}_${eventSpecific}_${eventSource}`.replace(/[^a-zA-Z0-9]/g, '_');
+  };
+
+  // ✅ Generate UNIQUE incident ID
+  const getIncidentId = (incident) => {
+    if (incident.id) return `incident_${incident.id}`;
+    if (incident.incident_id) return `incident_${incident.incident_id}`;
+    
+    // Include timestamp and title to differentiate similar incidents
+    const timestamp = incident.created_at || incident.timestamp || incident.time || '';
+    const title = incident.title || 'unknown';
+    const priority = incident.priority || incident.severity || 'unknown';
+    
+    return `incident_${title}_${timestamp}_${priority}`.replace(/[^a-zA-Z0-9]/g, '_');
+  };
 
   // Connect to WebSocket on mount
   useEffect(() => {
@@ -25,7 +64,39 @@ const RealtimeEventsViewer = () => {
     };
 
     const onNewEvent = (event) => {
+      // ✅ Generate unique ID for this EXACT event
+      const eventId = getEventId(event);
+      
+      // Log for debugging
+      console.log(`📥 Received event: ${event.event_name || 'Unknown'}`, {
+        id: eventId,
+        timestamp: event.timestamp || event.eventTime,
+        event_id: event.event_id || event.id
+      });
+      
+      // ✅ ONLY skip if this EXACT event was already processed
+      if (processedEventIds.current.has(eventId)) {
+        console.log(`🔄 Skipping EXACT duplicate event: ${event.event_name}`, eventId);
+        return;
+      }
+      
+      // Add to processed set
+      processedEventIds.current.add(eventId);
+      
+      // Clean up after 1 minute (events shouldn't be duplicates after 1 minute)
+      setTimeout(() => {
+        processedEventIds.current.delete(eventId);
+        console.log(`🧹 Cleaned up event ID from cache: ${eventId}`);
+      }, 60000); // 1 minute
+      
       setEvents(prev => {
+        // ✅ Double-check: only skip if EXACT duplicate exists in state
+        const exists = prev.some(e => getEventId(e) === eventId);
+        if (exists) {
+          console.log(`🔄 Event already in state, skipping: ${eventId}`);
+          return prev;
+        }
+        
         const newEvents = [event, ...prev];
         // Keep only last 100 events
         return newEvents.slice(0, 100);
@@ -43,7 +114,40 @@ const RealtimeEventsViewer = () => {
     };
 
     const onNewIncident = (incident) => {
-      setIncidents(prev => [incident, ...prev]);
+      // ✅ Generate unique ID for this EXACT incident
+      const incidentId = getIncidentId(incident);
+      
+      console.log(`📥 Received incident: ${incident.title || 'Unknown'}`, {
+        id: incidentId,
+        timestamp: incident.created_at || incident.timestamp,
+        incident_id: incident.id || incident.incident_id
+      });
+      
+      // ✅ ONLY skip if this EXACT incident was already processed
+      if (processedIncidentIds.current.has(incidentId)) {
+        console.log(`🔄 Skipping EXACT duplicate incident: ${incident.title}`, incidentId);
+        return;
+      }
+      
+      // Add to processed set
+      processedIncidentIds.current.add(incidentId);
+      
+      // Clean up after 1 minute
+      setTimeout(() => {
+        processedIncidentIds.current.delete(incidentId);
+      }, 60000);
+      
+      setIncidents(prev => {
+        // ✅ Double-check: only skip if EXACT duplicate exists in state
+        const exists = prev.some(i => getIncidentId(i) === incidentId);
+        if (exists) {
+          console.log(`🔄 Incident already in state, skipping: ${incidentId}`);
+          return prev;
+        }
+        
+        return [incident, ...prev];
+      });
+      
       setStats(prev => ({
         ...prev,
         total_incidents: prev.total_incidents + 1,
@@ -51,7 +155,7 @@ const RealtimeEventsViewer = () => {
       
       // Show notification
       if (Notification.permission === 'granted') {
-        new Notification(`🚨 ${incident.severity}: ${incident.title}`);
+        new Notification(`🚨 ${incident.severity || incident.priority}: ${incident.title}`);
       }
     };
 
@@ -76,6 +180,10 @@ const RealtimeEventsViewer = () => {
       websocketService.off('new_event', onNewEvent);
       websocketService.off('new_incident', onNewIncident);
       websocketService.disconnect();
+      
+      // Clear caches on unmount
+      processedEventIds.current.clear();
+      processedIncidentIds.current.clear();
     };
   }, []);
 
@@ -120,8 +228,8 @@ const RealtimeEventsViewer = () => {
           <div className="flex items-center space-x-2">
             <span className="text-red-600 font-bold">🚨 New Incidents:</span>
             {incidents.slice(0, 3).map((incident, i) => (
-              <span key={i} className="text-sm bg-red-100 text-red-800 px-2 py-1 rounded">
-                {incident.severity}: {incident.title}
+              <span key={getIncidentId(incident) || i} className="text-sm bg-red-100 text-red-800 px-2 py-1 rounded">
+                {incident.severity || incident.priority}: {incident.title}
               </span>
             ))}
             {incidents.length > 3 && (
@@ -151,46 +259,50 @@ const RealtimeEventsViewer = () => {
               )}
             </div>
           ) : (
-            events.map((event, index) => (
-              <div key={event.event_id || index} className="px-6 py-3 hover:bg-gray-50">
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-3">
-                      <span className="font-medium text-gray-900">
-                        {event.event_name || 'Unknown Event'}
-                      </span>
-                      <SeverityBadge severity={event.severity || 'INFO'} />
-                      <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                        {event.provider_type || 'N/A'}
-                      </span>
-                      <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded">
-                        LIVE
-                      </span>
-                    </div>
-                    <div className="mt-1 flex items-center space-x-4 text-sm text-gray-500">
-                      <span>👤 {event.actor || 'N/A'}</span>
-                      {event.actor_ip && <span>🌐 {event.actor_ip}</span>}
-                      {event.region && <span>🌍 {event.region}</span>}
-                      <span>🕐 {formatTime(event.timestamp)}</span>
-                    </div>
-                    {event.severity_score !== undefined && (
-                      <div className="mt-1 text-xs text-gray-400">
-                        Score: {event.severity_score}/100
+            events.map((event) => {
+              // ✅ Use proper unique key for React rendering
+              const key = getEventId(event) || `event_${Math.random().toString()}`;
+              return (
+                <div key={key} className="px-6 py-3 hover:bg-gray-50">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-3">
+                        <span className="font-medium text-gray-900">
+                          {event.event_name || 'Unknown Event'}
+                        </span>
+                        <SeverityBadge severity={event.severity || 'INFO'} />
+                        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                          {event.provider_type || 'N/A'}
+                        </span>
+                        <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded animate-pulse">
+                          LIVE
+                        </span>
                       </div>
-                    )}
+                      <div className="mt-1 flex items-center space-x-4 text-sm text-gray-500">
+                        <span>👤 {event.actor || 'N/A'}</span>
+                        {event.actor_ip && <span>🌐 {event.actor_ip}</span>}
+                        {event.region && <span>🌍 {event.region}</span>}
+                        <span>🕐 {formatTime(event.timestamp)}</span>
+                      </div>
+                      {event.severity_score !== undefined && (
+                        <div className="mt-1 text-xs text-gray-400">
+                          Score: {event.severity_score}/100
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => {
+                        console.log('Event details:', event);
+                        alert(JSON.stringify(event, null, 2));
+                      }}
+                      className="text-blue-600 hover:text-blue-800 text-sm"
+                    >
+                      View JSON
+                    </button>
                   </div>
-                  <button
-                    onClick={() => {
-                      console.log('Event details:', event);
-                      alert(JSON.stringify(event, null, 2));
-                    }}
-                    className="text-blue-600 hover:text-blue-800 text-sm"
-                  >
-                    View JSON
-                  </button>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
           <div ref={eventsEndRef} />
         </div>

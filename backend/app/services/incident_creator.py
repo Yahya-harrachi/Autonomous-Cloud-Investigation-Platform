@@ -3,6 +3,7 @@ Incident Creator - Creates incidents from normalized events based on severity
 """
 import logging
 import uuid
+import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from ..domain.models.event import NormalizedEvent
 from ..domain.models.incident import Incident, IncidentStatus, IncidentPriority
 from ..models.incident import IncidentModel
 from ..core.database import SessionLocal
+from ..core.config import settings
+from .telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,17 @@ class IncidentCreator:
             "LOW": False,            # Never create incident
             "INFO": False,           # Never create incident
         }
+        
+        # Initialize Telegram notifier if configured
+        self.telegram_notifier = None
+        if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
+            self.telegram_notifier = TelegramNotifier(
+                settings.TELEGRAM_BOT_TOKEN,
+                settings.TELEGRAM_CHAT_ID
+            )
+            logger.info("✅ Telegram notifier initialized")
+        else:
+            logger.info("ℹ️ Telegram notifier not configured (optional)")
     
     def process_event(self, normalized: NormalizedEvent) -> Optional[Incident]:
         """
@@ -53,7 +67,7 @@ class IncidentCreator:
         incident = self._create_incident(normalized)
         print(f"   ✅ Incident object created: {incident.title}")
         
-        # 4. Save to database
+        # 4. Save to database (this will also send Telegram notification)
         self._save_incident(incident)
         
         # ✅ FIX: Use priority.value instead of severity
@@ -191,6 +205,32 @@ class IncidentCreator:
             db.commit()
             db.refresh(db_incident)
             logger.info(f"✅ Incident saved to database: {incident.id}")
+            
+            # ✅ Send Telegram notification after successful save
+            if self.telegram_notifier:
+                try:
+                    # Check if we're in an async context
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # If we're in async context, create a task
+                        asyncio.create_task(
+                            self.telegram_notifier.send_incident_alert(incident)
+                        )
+                        logger.info(f"📱 Telegram notification scheduled for incident {incident.id}")
+                    except RuntimeError:
+                        # If we're in sync context, run it synchronously
+                        # We need to create a new event loop for this
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            loop.run_until_complete(
+                                self.telegram_notifier.send_incident_alert(incident)
+                            )
+                            logger.info(f"📱 Telegram notification sent for incident {incident.id}")
+                        finally:
+                            loop.close()
+                except Exception as e:
+                    logger.error(f"❌ Failed to send Telegram notification: {e}")
             
         except Exception as e:
             logger.error(f"Failed to save incident: {e}")
