@@ -62,11 +62,10 @@ def list_incidents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db
     
     return [
         {
-            "id": i.id,
+            "id": str(i.id),
             "title": i.title,
             "description": i.description,
-            "severity": i.priority.value if i.priority else "MEDIUM",  # ✅ Add this
-            "priority": i.priority.value if i.priority else "MEDIUM",  # ✅ Keep this too
+            "priority": i.priority.value if i.priority else "MEDIUM",
             "status": i.status.value if i.status else "pending",
             "source_type": i.source_type,
             "source_event_id": i.source_event_id,

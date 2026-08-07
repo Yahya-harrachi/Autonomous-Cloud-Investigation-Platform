@@ -10,10 +10,9 @@ const Dashboard = () => {
     total: 0,
     pending: 0,
     investigating: 0,
-    resolved: 0,
+    resolved: 0
   });
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -22,41 +21,24 @@ const Dashboard = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      setError(null);
-
-      // Fetch from PostgreSQL only
       const [incidentsRes, statsRes] = await Promise.all([
         incidentAPI.getAll(0, 10),
-        incidentAPI.getStats(),
+        incidentAPI.getStats()
       ]);
-
+      
+      // ✅ Check if incidentsRes is an array or has an incidents property
       const incidentsData = Array.isArray(incidentsRes) ? incidentsRes : incidentsRes?.incidents || [];
       setIncidents(incidentsData);
       setStats(statsRes || { total: 0, pending: 0, investigating: 0, resolved: 0 });
     } catch (err) {
       console.error('Error loading data:', err);
-      setError('Failed to load incidents. Make sure the backend is running.');
     } finally {
       setLoading(false);
     }
   };
 
   if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-gray-500">Loading incidents...</div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
-          {error}
-        </div>
-      </div>
-    );
+    return <div className="text-center py-8">Loading...</div>;
   }
 
   return (
@@ -94,33 +76,26 @@ const Dashboard = () => {
         <div className="divide-y divide-gray-200">
           {incidents.length === 0 ? (
             <div className="px-6 py-8 text-center text-gray-500">
-              No incidents found in the database.
+              No incidents found
             </div>
           ) : (
             incidents.map((incident) => (
-              <Link
-                to={`/incidents/${incident.id}`}
-                key={incident.id}
-                className="block hover:bg-gray-50"
-              >
+              <Link to={`/incidents/${incident.id}`} key={incident.id} className="block hover:bg-gray-50">
                 <div className="px-6 py-4 flex items-center justify-between">
                   <div className="flex-1">
-                    <h3 className="font-medium">{incident.title}</h3>
+                    <div className="flex items-center space-x-3">
+                      <h3 className="font-medium">{incident.title}</h3>
+                      {/* ✅ FIX: Use priority or severity */}
+                      <SeverityBadge severity={incident.priority || incident.severity || 'MEDIUM'} />
+                      <StatusBadge status={incident.status || 'pending'} />
+                    </div>
                     <p className="text-sm text-gray-500 truncate max-w-md">
-                      {incident.description
-                        ? incident.description.substring(0, 100) + '...'
-                        : 'No description'}
+                      {incident.description ? incident.description.substring(0, 100) + '...' : 'No description'}
                     </p>
                   </div>
-                  <div className="flex items-center space-x-4">
-                    <SeverityBadge
-                      severity={(incident.priority || incident.severity || 'MEDIUM').toUpperCase()}
-                    />
-                    <StatusBadge status={incident.status || 'pending'} />
-                    <span className="text-sm text-gray-500">
-                      {new Date(incident.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
+                  <span className="text-sm text-gray-500">
+                    {new Date(incident.created_at).toLocaleDateString()}
+                  </span>
                 </div>
               </Link>
             ))

@@ -61,6 +61,17 @@ from .services.sqs_consumer import start_consumer
 
 @app.on_event("startup")
 async def startup_event():
-    # Start SQS consumer automatically
+    # ✅ Get the main event loop
+    main_loop = asyncio.get_running_loop()
+    
+    # ✅ Set the event loop in the consumer
+    from .services.sqs_consumer import get_consumer
+    consumer = get_consumer()
+    consumer.set_event_loop(main_loop)
+    
+    print("✅ Main event loop set in SQS consumer")
+    
+    # ✅ Auto-start the consumer
+    from .services.sqs_consumer import start_consumer
     start_consumer()
-    print("✅ SQS Consumer auto-started"),
+    print("✅ SQS Consumer auto-started")

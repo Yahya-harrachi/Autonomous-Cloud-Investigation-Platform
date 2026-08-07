@@ -9,7 +9,6 @@ const IncidentDetail = () => {
   const navigate = useNavigate();
   const [incident, setIncident] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
@@ -19,12 +18,10 @@ const IncidentDetail = () => {
   const loadIncident = async () => {
     try {
       setLoading(true);
-      setError(null);
       const data = await incidentAPI.getById(id);
       setIncident(data);
     } catch (err) {
       console.error('Error loading incident:', err);
-      setError('Incident not found');
     } finally {
       setLoading(false);
     }
@@ -53,13 +50,21 @@ const IncidentDetail = () => {
     }
   };
 
+  const formatTime = (isoString) => {
+    if (!isoString) return 'N/A';
+    const date = new Date(isoString);
+    return date.toLocaleString();
+  };
+
   if (loading) {
     return <div className="text-center py-8">Loading incident...</div>;
   }
 
-  if (error || !incident) {
+  if (!incident) {
     return <div className="text-center py-8 text-red-500">Incident not found</div>;
   }
+
+  const extraData = incident.extra_data || {};
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
@@ -69,11 +74,16 @@ const IncidentDetail = () => {
           <div>
             <h1 className="text-2xl font-bold">{incident.title}</h1>
             <div className="flex items-center space-x-4 mt-2">
-              <SeverityBadge severity={incident.priority?.toUpperCase() || 'MEDIUM'} />
+              <SeverityBadge severity={incident.priority || incident.severity} />
               <StatusBadge status={incident.status || 'pending'} />
               <span className="text-sm text-gray-500">
-                Created: {new Date(incident.created_at).toLocaleString()}
+                Created: {formatTime(incident.created_at)}
               </span>
+              {extraData.severity_score !== undefined && (
+                <span className="text-sm font-medium text-gray-600">
+                  Score: {extraData.severity_score}/100
+                </span>
+              )}
             </div>
           </div>
           <button
@@ -104,13 +114,36 @@ const IncidentDetail = () => {
             </div>
           </div>
 
-          {/* Extra Data */}
-          {incident.extra_data && Object.keys(incident.extra_data).length > 0 && (
+          {/* Event Context */}
+          {extraData.event_name && (
             <div>
-              <h3 className="text-sm font-medium text-gray-500">Additional Data</h3>
-              <pre className="mt-1 bg-gray-50 p-3 rounded-md text-sm overflow-auto">
-                {JSON.stringify(incident.extra_data, null, 2)}
-              </pre>
+              <h3 className="text-sm font-medium text-gray-500">Event Details</h3>
+              <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
+                <div><span className="text-gray-500">Event:</span> {extraData.event_name}</div>
+                <div><span className="text-gray-500">Actor:</span> {extraData.actor || 'N/A'}</div>
+                {extraData.actor_type && (
+                  <div><span className="text-gray-500">Actor Type:</span> {extraData.actor_type}</div>
+                )}
+                {extraData.region && (
+                  <div><span className="text-gray-500">Region:</span> {extraData.region}</div>
+                )}
+                {extraData.source_ip && (
+                  <div><span className="text-gray-500">Source IP:</span> {extraData.source_ip}</div>
+                )}
+                {extraData.timestamp && (
+                  <div><span className="text-gray-500">Event Time:</span> {formatTime(extraData.timestamp)}</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Severity Reason */}
+          {extraData.reason && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-500">Severity Reasoning</h3>
+              <p className="mt-1 text-sm text-gray-600 bg-gray-50 p-3 rounded-md">
+                {extraData.reason}
+              </p>
             </div>
           )}
 

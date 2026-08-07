@@ -11,6 +11,7 @@ const api = axios.create({
 
 // ===== INCIDENT API (Database) =====
 export const incidentAPI = {
+  // Get all incidents
   getAll: async (skip = 0, limit = 100, status = null) => {
     let url = `/incidents/?skip=${skip}&limit=${limit}`;
     if (status && status !== 'all') {
@@ -19,18 +20,26 @@ export const incidentAPI = {
     const response = await api.get(url);
     return response.data;
   },
+
+  // Get incident by ID
   getById: async (id) => {
     const response = await api.get(`/incidents/${id}`);
     return response.data;
   },
+
+  // Update incident status
   updateStatus: async (id, status) => {
     const response = await api.put(`/incidents/${id}/status?status=${status}`);
     return response.data;
   },
+
+  // Delete incident
   delete: async (id) => {
     const response = await api.delete(`/incidents/${id}`);
     return response.data;
   },
+
+  // Get incident stats
   getStats: async () => {
     const response = await api.get('/incidents/stats');
     return response.data;
