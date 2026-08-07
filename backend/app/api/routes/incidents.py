@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+"""
+Incident API Routes - Complete and Corrected
+"""
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import uuid
 
 from ...core.database import get_db
@@ -12,7 +15,11 @@ from ...infrastructure.repositories.incident_repository import IncidentRepositor
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
-# ===== STATS ROUTE =====
+
+# ================================================================
+# STATS ROUTE - MUST BE BEFORE /{incident_id}
+# ================================================================
+
 @router.get("/stats", response_model=None)
 async def get_incident_stats(
     db: Session = Depends(get_db)
@@ -25,40 +32,33 @@ async def get_incident_stats(
         "total": stats.get("total", 0),
         "pending": stats.get("pending", 0),
         "investigating": stats.get("investigating", 0),
-        "resolved": stats.get("resolved", 0)
+        "resolved": stats.get("resolved", 0),
     }
 
-# ===== FROM-INGESTION ROUTE =====
-@router.get("/from-ingestion", response_model=None)
-async def get_incidents_from_ingestion():
-    """Get all incidents created by the ingestion pipeline"""
-    from ...application.services.ingestion import IngestionService
-    service = IngestionService()
-    incidents = service.get_incidents()
-    
-    return {
-        "total": len(incidents),
-        "incidents": [
-            {
-                "id": i.id,
-                "title": i.title,
-                "description": i.description,
-                "priority": i.priority.value,
-                "status": i.status.value,
-                "source_type": i.source_type,
-                "created_at": i.created_at.isoformat(),
-                "tags": i.tags,
-                "metadata": i.metadata
-            }
-            for i in incidents
-        ]
-    }
 
-# ===== LIST INCIDENTS - FIXED =====
+# ================================================================
+# LIST INCIDENTS WITH FILTER
+# ================================================================
+
 @router.get("/", response_model=List[IncidentResponse])
-def list_incidents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    """List all incidents"""
-    incidents = db.query(IncidentModel).offset(skip).limit(limit).all()
+def list_incidents(
+    skip: int = Query(0, description="Number of records to skip"),
+    limit: int = Query(100, description="Maximum records to return"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    db: Session = Depends(get_db)
+):
+    """List all incidents with optional status filter"""
+    query = db.query(IncidentModel)
+    
+    # Apply status filter if provided
+    if status and status != 'all':
+        try:
+            status_enum = IncidentStatus(status)
+            query = query.filter(IncidentModel.status == status_enum)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    
+    incidents = query.order_by(IncidentModel.created_at.desc()).offset(skip).limit(limit).all()
     
     return [
         {
@@ -77,10 +77,17 @@ def list_incidents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db
         for i in incidents
     ]
 
-# ===== CREATE INCIDENT =====
+
+# ================================================================
+# CREATE INCIDENT (Manual)
+# ================================================================
+
 @router.post("/", response_model=IncidentResponse)
-def create_incident(incident: IncidentCreate, db: Session = Depends(get_db)):
-    """Create a new incident"""
+def create_incident(
+    incident: IncidentCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new incident manually"""
     db_incident = IncidentModel(
         title=incident.title,
         description=incident.description,
@@ -94,7 +101,7 @@ def create_incident(incident: IncidentCreate, db: Session = Depends(get_db)):
     db.refresh(db_incident)
     
     return {
-        "id": db_incident.id,
+        "id": str(db_incident.id),
         "title": db_incident.title,
         "description": db_incident.description,
         "priority": db_incident.priority.value if db_incident.priority else "MEDIUM",
@@ -107,9 +114,16 @@ def create_incident(incident: IncidentCreate, db: Session = Depends(get_db)):
         "updated_at": db_incident.updated_at
     }
 
-# ===== GET INCIDENT BY ID =====
+
+# ================================================================
+# GET INCIDENT BY ID
+# ================================================================
+
 @router.get("/{incident_id}", response_model=IncidentResponse)
-def get_incident(incident_id: str, db: Session = Depends(get_db)):
+def get_incident(
+    incident_id: str,
+    db: Session = Depends(get_db)
+):
     """Get incident by ID"""
     try:
         incident_uuid = uuid.UUID(incident_id)
@@ -121,7 +135,7 @@ def get_incident(incident_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Incident not found")
     
     return {
-        "id": incident.id,
+        "id": str(incident.id),
         "title": incident.title,
         "description": incident.description,
         "priority": incident.priority.value if incident.priority else "MEDIUM",
@@ -134,11 +148,15 @@ def get_incident(incident_id: str, db: Session = Depends(get_db)):
         "updated_at": incident.updated_at
     }
 
-# ===== UPDATE INCIDENT STATUS =====
+
+# ================================================================
+# UPDATE INCIDENT STATUS
+# ================================================================
+
 @router.put("/{incident_id}/status", response_model=IncidentResponse)
 def update_incident_status(
-    incident_id: str, 
-    status: str, 
+    incident_id: str,
+    status: str,
     db: Session = Depends(get_db)
 ):
     """Update incident status"""
@@ -159,7 +177,7 @@ def update_incident_status(
     db.refresh(incident)
     
     return {
-        "id": incident.id,
+        "id": str(incident.id),
         "title": incident.title,
         "description": incident.description,
         "priority": incident.priority.value if incident.priority else "MEDIUM",
@@ -172,7 +190,79 @@ def update_incident_status(
         "updated_at": incident.updated_at
     }
 
-# ===== UPLOAD EVIDENCE =====
+
+# ================================================================
+# UPDATE INCIDENT PRIORITY
+# ================================================================
+
+@router.put("/{incident_id}/priority", response_model=IncidentResponse)
+def update_incident_priority(
+    incident_id: str,
+    priority: str,
+    db: Session = Depends(get_db)
+):
+    """Update incident priority"""
+    from ...domain.models.incident import IncidentPriority
+    
+    try:
+        incident_uuid = uuid.UUID(incident_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid incident ID format")
+    
+    incident = db.query(IncidentModel).filter(IncidentModel.id == incident_uuid).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    if priority not in [p.value for p in IncidentPriority]:
+        raise HTTPException(status_code=400, detail="Invalid priority")
+    
+    incident.priority = priority
+    db.commit()
+    db.refresh(incident)
+    
+    return {
+        "id": str(incident.id),
+        "title": incident.title,
+        "description": incident.description,
+        "priority": incident.priority.value if incident.priority else "MEDIUM",
+        "status": incident.status.value if incident.status else "pending",
+        "source_type": incident.source_type,
+        "source_event_id": incident.source_event_id,
+        "tags": incident.tags or [],
+        "extra_data": incident.extra_data or {},
+        "created_at": incident.created_at,
+        "updated_at": incident.updated_at
+    }
+
+
+# ================================================================
+# DELETE INCIDENT
+# ================================================================
+
+@router.delete("/{incident_id}")
+def delete_incident(
+    incident_id: str,
+    db: Session = Depends(get_db)
+):
+    """Delete an incident"""
+    try:
+        incident_uuid = uuid.UUID(incident_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid incident ID format")
+    
+    incident = db.query(IncidentModel).filter(IncidentModel.id == incident_uuid).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    db.delete(incident)
+    db.commit()
+    return {"message": "Incident deleted successfully"}
+
+
+# ================================================================
+# UPLOAD EVIDENCE
+# ================================================================
+
 @router.post("/{incident_id}/evidence")
 def upload_evidence(
     incident_id: str,
@@ -195,67 +285,15 @@ def upload_evidence(
     
     return {"message": "Evidence uploaded", "key": key}
 
-# ===== UPDATE INCIDENT =====
-@router.put("/{incident_id}", response_model=IncidentResponse)
-def update_incident(
-    incident_id: str,
-    incident_update: IncidentCreate,
-    db: Session = Depends(get_db)
-):
-    """Update an incident"""
-    try:
-        incident_uuid = uuid.UUID(incident_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid incident ID format")
-    
-    incident = db.query(IncidentModel).filter(IncidentModel.id == incident_uuid).first()
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    
-    incident.title = incident_update.title
-    incident.description = incident_update.description
-    incident.priority = incident_update.priority
-    incident.source_type = incident_update.source_type
-    incident.source_event_id = incident_update.source_id
-    incident.extra_data = incident_update.extra_data
-    
-    db.commit()
-    db.refresh(incident)
-    
-    return {
-        "id": incident.id,
-        "title": incident.title,
-        "description": incident.description,
-        "priority": incident.priority.value if incident.priority else "MEDIUM",
-        "status": incident.status.value if incident.status else "pending",
-        "source_type": incident.source_type,
-        "source_event_id": incident.source_event_id,
-        "tags": incident.tags or [],
-        "extra_data": incident.extra_data or {},
-        "created_at": incident.created_at,
-        "updated_at": incident.updated_at
-    }
 
-# ===== DELETE INCIDENT =====
-@router.delete("/{incident_id}")
-def delete_incident(incident_id: str, db: Session = Depends(get_db)):
-    """Delete an incident"""
-    try:
-        incident_uuid = uuid.UUID(incident_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid incident ID format")
-    
-    incident = db.query(IncidentModel).filter(IncidentModel.id == incident_uuid).first()
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    
-    db.delete(incident)
-    db.commit()
-    return {"message": "Incident deleted successfully"}
+# ================================================================
+# LIST EVIDENCE
+# ================================================================
 
-# ===== LIST EVIDENCE =====
 @router.get("/{incident_id}/evidence")
-def list_evidence(incident_id: str):
+def list_evidence(
+    incident_id: str
+):
     """List all evidence files for an incident"""
     try:
         uuid.UUID(incident_id)
@@ -266,9 +304,16 @@ def list_evidence(incident_id: str):
     files = s3.list_files(incident_id)
     return {"incident_id": incident_id, "evidence_files": files}
 
-# ===== DELETE EVIDENCE =====
+
+# ================================================================
+# DELETE EVIDENCE
+# ================================================================
+
 @router.delete("/{incident_id}/evidence/{filename}")
-def delete_evidence(incident_id: str, filename: str):
+def delete_evidence(
+    incident_id: str,
+    filename: str
+):
     """Delete an evidence file from S3"""
     try:
         uuid.UUID(incident_id)

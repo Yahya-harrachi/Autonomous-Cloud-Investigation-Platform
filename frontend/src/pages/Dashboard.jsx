@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { incidentAPI } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
 import SeverityBadge from '../components/SeverityBadge';
+import websocketService from '../services/websocket';
 
 const Dashboard = () => {
   const [incidents, setIncidents] = useState([]);
@@ -13,9 +14,25 @@ const Dashboard = () => {
     resolved: 0
   });
   const [loading, setLoading] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
     loadData();
+
+    const onConnected = () => setIsConnected(true);
+    const onDisconnected = () => setIsConnected(false);
+
+    websocketService.on('connected', onConnected);
+    websocketService.on('disconnected', onDisconnected);
+
+    if (!websocketService.isConnected) {
+      websocketService.connect();
+    }
+
+    return () => {
+      websocketService.off('connected', onConnected);
+      websocketService.off('disconnected', onDisconnected);
+    };
   }, []);
 
   const loadData = async () => {
@@ -25,11 +42,11 @@ const Dashboard = () => {
         incidentAPI.getAll(0, 10),
         incidentAPI.getStats()
       ]);
-      
-      // ✅ Check if incidentsRes is an array or has an incidents property
+
       const incidentsData = Array.isArray(incidentsRes) ? incidentsRes : incidentsRes?.incidents || [];
       setIncidents(incidentsData);
       setStats(statsRes || { total: 0, pending: 0, investigating: 0, resolved: 0 });
+      setIsConnected(websocketService.isConnected);
     } catch (err) {
       console.error('Error loading data:', err);
     } finally {
@@ -43,7 +60,15 @@ const Dashboard = () => {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">Dashboard</h1>
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold">Dashboard</h1>
+        <div className="flex items-center space-x-2">
+          <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+          <span className="text-sm font-medium">
+            {isConnected ? '🟢 Live' : '🔴 Disconnected'}
+          </span>
+        </div>
+      </div>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -75,9 +100,7 @@ const Dashboard = () => {
         </div>
         <div className="divide-y divide-gray-200">
           {incidents.length === 0 ? (
-            <div className="px-6 py-8 text-center text-gray-500">
-              No incidents found
-            </div>
+            <div className="px-6 py-8 text-center text-gray-500">No incidents found</div>
           ) : (
             incidents.map((incident) => (
               <Link to={`/incidents/${incident.id}`} key={incident.id} className="block hover:bg-gray-50">
@@ -85,7 +108,6 @@ const Dashboard = () => {
                   <div className="flex-1">
                     <div className="flex items-center space-x-3">
                       <h3 className="font-medium">{incident.title}</h3>
-                      {/* ✅ FIX: Use priority or severity */}
                       <SeverityBadge severity={incident.priority || incident.severity || 'MEDIUM'} />
                       <StatusBadge status={incident.status || 'pending'} />
                     </div>
