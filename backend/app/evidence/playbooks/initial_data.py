@@ -1,17 +1,24 @@
 # app/evidence/playbooks/initial_data.py
-from app.domain.models.evidence import EvidencePlaybook
+"""
+Initial playbook data for evidence collection
+"""
+from app.models.evidence import EvidencePlaybook
+from app.core.database import SessionLocal
+
 
 INITIAL_PLAYBOOKS = [
     {
         "name": "IAM_PRIVILEGE_ESCALATION",
-        "description": "Investigates IAM privilege escalation attempts",
+        "description": "Investigates IAM privilege escalation attempts including policy attachments and role changes",
         "trigger_events": [
             "AttachUserPolicy",
-            "AttachRolePolicy", 
+            "AttachRolePolicy",
             "PutUserPolicy",
             "PutRolePolicy",
             "CreateAccessKey",
-            "UpdateAssumeRolePolicy"
+            "UpdateAssumeRolePolicy",
+            "DeleteUserPolicy",
+            "DetachUserPolicy"
         ],
         "evidence_required": [
             "CloudTrailEvent",
@@ -24,12 +31,13 @@ INITIAL_PLAYBOOKS = [
     },
     {
         "name": "S3_EXPOSURE",
-        "description": "Investigates potential S3 bucket exposure",
+        "description": "Investigates potential S3 bucket exposure through policy or ACL changes",
         "trigger_events": [
             "PutBucketPolicy",
             "PutBucketAcl",
             "PutBucketPublicAccessBlock",
-            "DeleteBucketPublicAccessBlock"
+            "DeleteBucketPublicAccessBlock",
+            "PutBucketWebsite"
         ],
         "evidence_required": [
             "CloudTrailEvent",
@@ -41,11 +49,12 @@ INITIAL_PLAYBOOKS = [
     },
     {
         "name": "SECURITY_GROUP_EXPOSURE",
-        "description": "Investigates security group exposure",
+        "description": "Investigates security group changes that may expose resources",
         "trigger_events": [
             "AuthorizeSecurityGroupIngress",
             "AuthorizeSecurityGroupEgress",
-            "RevokeSecurityGroupIngress"
+            "RevokeSecurityGroupIngress",
+            "RevokeSecurityGroupEgress"
         ],
         "evidence_required": [
             "CloudTrailEvent",
@@ -54,18 +63,53 @@ INITIAL_PLAYBOOKS = [
         ],
         "enabled": True,
         "version": "1.0.0"
+    },
+    {
+        "name": "ROOT_ACTIVITY",
+        "description": "Investigates root user activity which should be rare and monitored",
+        "trigger_events": [
+            "ConsoleLogin",
+            "CreateUser",
+            "DeleteUser",
+            "CreateAccessKey",
+            "DeleteAccessKey"
+        ],
+        "evidence_required": [
+            "CloudTrailEvent",
+            "IAMUser"
+        ],
+        "enabled": True,
+        "version": "1.0.0"
     }
 ]
 
-def seed_playbooks(db_session):
-    """Insert initial playbooks into database"""
-    for playbook_data in INITIAL_PLAYBOOKS:
-        existing = db_session.query(EvidencePlaybook).filter(
-            EvidencePlaybook.name == playbook_data["name"]
-        ).first()
+
+def seed_playbooks():
+    """Insert initial playbooks into database if they don't exist"""
+    db = SessionLocal()
+    try:
+        for playbook_data in INITIAL_PLAYBOOKS:
+            # Check if playbook already exists
+            existing = db.query(EvidencePlaybook).filter(
+                EvidencePlaybook.name == playbook_data["name"]
+            ).first()
+            
+            if not existing:
+                playbook = EvidencePlaybook(**playbook_data)
+                db.add(playbook)
+                print(f"✅ Added playbook: {playbook_data['name']}")
+            else:
+                print(f"⏭️ Playbook already exists: {playbook_data['name']}")
         
-        if not existing:
-            playbook = EvidencePlaybook(**playbook_data)
-            db_session.add(playbook)
-    
-    db_session.commit()
+        db.commit()
+        print("✅ All playbooks seeded successfully!")
+        
+    except Exception as e:
+        print(f"❌ Error seeding playbooks: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    seed_playbooks()

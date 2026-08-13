@@ -18,25 +18,25 @@ class EvidenceArtifact(Base):
     incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False)
     
     # Artifact Identification
-    artifact_type = Column(String(50), nullable=False)  # CloudTrailEvent, IAMUser, etc.
-    source = Column(String(50), nullable=False)         # aws_cloudtrail, aws_iam
+    artifact_type = Column(String(50), nullable=False)
+    source = Column(String(50), nullable=False)
     provider = Column(String(20), default="aws")
     region = Column(String(50))
     
     # Collection Metadata
-    collector = Column(String(100), nullable=False)     # CloudTrailCollector, IAMCollector
+    collector = Column(String(100), nullable=False)
     collected_at = Column(DateTime, default=datetime.utcnow)
     
-    # Content - Use JSON
-    content = Column(JSON, nullable=False)              # The actual evidence data
-    metadata = Column(JSON)                             # Additional context
+    # Content
+    content = Column(JSON, nullable=False)
+    extra_data = Column(JSON)
     
     # Integrity
-    hash = Column(String(128))                          # SHA-256 checksum
+    hash = Column(String(128))
     hash_algorithm = Column(String(20), default="SHA-256")
     
     # Status
-    collection_status = Column(String(20), default="PENDING")  # PENDING, COLLECTING, COMPLETED, PARTIAL, FAILED
+    collection_status = Column(String(20), default="PENDING")
     error_message = Column(Text)
     
     # Verification
@@ -47,8 +47,7 @@ class EvidenceArtifact(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # ✅ Relationship - points to IncidentModel
-    incident = relationship("IncidentModel", back_populates="evidence_artifacts")
+    # ✅ REMOVE the relationship here - we'll define it after both classes exist
     
     def to_dict(self):
         return {
@@ -61,7 +60,7 @@ class EvidenceArtifact(Base):
             "collector": self.collector,
             "collected_at": self.collected_at.isoformat() if self.collected_at else None,
             "content": self.content,
-            "metadata": self.metadata,
+            "extra_data": self.extra_data,
             "hash": self.hash,
             "hash_algorithm": self.hash_algorithm,
             "collection_status": self.collection_status,
@@ -80,12 +79,12 @@ class EvidencePlaybook(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
     # Playbook Info
-    name = Column(String(100), unique=True, nullable=False)  # IAM_PRIVILEGE_ESCALATION
+    name = Column(String(100), unique=True, nullable=False)
     description = Column(Text)
     
     # Configuration
-    trigger_events = Column(JSON, nullable=False)           # ["AttachUserPolicy", "PutUserPolicy"]
-    evidence_required = Column(JSON, nullable=False)        # ["CloudTrailEvent", "IAMUser"]
+    trigger_events = Column(JSON, nullable=False)
+    evidence_required = Column(JSON, nullable=False)
     
     # Status
     enabled = Column(Boolean, default=True)
@@ -107,3 +106,11 @@ class EvidencePlaybook(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+# ✅ Define relationships AFTER both classes are defined
+# We need to import IncidentModel here to set up the relationship
+from app.models.incident import IncidentModel
+
+# Set up the relationship on EvidenceArtifact
+EvidenceArtifact.incident = relationship("IncidentModel", back_populates="evidence_artifacts")

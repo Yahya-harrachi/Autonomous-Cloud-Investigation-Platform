@@ -42,9 +42,9 @@ class IncidentModel(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
     
-    # ✅ ADD THIS RELATIONSHIP
+    # ✅ Relationship - uses string reference to EvidenceArtifact
     evidence_artifacts = relationship(
-        "EvidenceArtifact", 
+        "EvidenceArtifact",
         back_populates="incident",
         cascade="all, delete-orphan",
         lazy="select"
