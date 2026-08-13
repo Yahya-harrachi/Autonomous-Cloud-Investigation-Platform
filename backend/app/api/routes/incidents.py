@@ -1,3 +1,4 @@
+# app/api/routes/incidents.py
 """
 Incident API Routes - Complete and Corrected
 """
@@ -5,13 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
+import hashlib
+import json
+from datetime import datetime
 
 from ...core.database import get_db
 from ...domain.models.incident import IncidentStatus
 from ...schemas.incident import IncidentCreate, IncidentResponse
-from ...services.s3_service import S3Service
 from ...models.incident import IncidentModel
+from ...models.evidence import EvidenceArtifact
 from ...infrastructure.repositories.incident_repository import IncidentRepository
+from ...evidence.collectors.base import parse_incident_id
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
@@ -71,6 +76,7 @@ def list_incidents(
             "source_event_id": i.source_event_id,
             "tags": i.tags or [],
             "extra_data": i.extra_data or {},
+            "evidence_count": i.evidence_count or 0,
             "created_at": i.created_at,
             "updated_at": i.updated_at
         }
@@ -110,6 +116,7 @@ def create_incident(
         "source_event_id": db_incident.source_event_id,
         "tags": db_incident.tags or [],
         "extra_data": db_incident.extra_data or {},
+        "evidence_count": db_incident.evidence_count or 0,
         "created_at": db_incident.created_at,
         "updated_at": db_incident.updated_at
     }
@@ -126,7 +133,7 @@ def get_incident(
 ):
     """Get incident by ID"""
     try:
-        incident_uuid = uuid.UUID(incident_id)
+        incident_uuid = parse_incident_id(incident_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
     
@@ -144,6 +151,7 @@ def get_incident(
         "source_event_id": incident.source_event_id,
         "tags": incident.tags or [],
         "extra_data": incident.extra_data or {},
+        "evidence_count": incident.evidence_count or 0,
         "created_at": incident.created_at,
         "updated_at": incident.updated_at
     }
@@ -161,7 +169,7 @@ def update_incident_status(
 ):
     """Update incident status"""
     try:
-        incident_uuid = uuid.UUID(incident_id)
+        incident_uuid = parse_incident_id(incident_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
     
@@ -186,6 +194,7 @@ def update_incident_status(
         "source_event_id": incident.source_event_id,
         "tags": incident.tags or [],
         "extra_data": incident.extra_data or {},
+        "evidence_count": incident.evidence_count or 0,
         "created_at": incident.created_at,
         "updated_at": incident.updated_at
     }
@@ -205,7 +214,7 @@ def update_incident_priority(
     from ...domain.models.incident import IncidentPriority
     
     try:
-        incident_uuid = uuid.UUID(incident_id)
+        incident_uuid = parse_incident_id(incident_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
     
@@ -230,6 +239,7 @@ def update_incident_priority(
         "source_event_id": incident.source_event_id,
         "tags": incident.tags or [],
         "extra_data": incident.extra_data or {},
+        "evidence_count": incident.evidence_count or 0,
         "created_at": incident.created_at,
         "updated_at": incident.updated_at
     }
@@ -246,7 +256,7 @@ def delete_incident(
 ):
     """Delete an incident"""
     try:
-        incident_uuid = uuid.UUID(incident_id)
+        incident_uuid = parse_incident_id(incident_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
     
@@ -260,71 +270,128 @@ def delete_incident(
 
 
 # ================================================================
-# UPLOAD EVIDENCE
+# ✅ EVIDENCE ROUTES - DATABASE BASED (NOT S3)
 # ================================================================
 
-@router.post("/{incident_id}/evidence")
-def upload_evidence(
+@router.get("/{incident_id}/evidence")
+def get_incident_evidence(
     incident_id: str,
-    file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """Upload evidence file for an incident"""
+    """
+    Get evidence artifacts for an incident from the database.
+    """
     try:
-        incident_uuid = uuid.UUID(incident_id)
+        incident_uuid = parse_incident_id(incident_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid incident ID format")
     
+    # Check if incident exists
     incident = db.query(IncidentModel).filter(IncidentModel.id == incident_uuid).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     
-    s3 = S3Service()
-    content = file.file.read()
-    key = s3.upload_file(incident_id, file.filename, content)
+    # Get evidence artifacts from database
+    artifacts = db.query(EvidenceArtifact).filter(
+        EvidenceArtifact.incident_id == incident_uuid
+    ).order_by(EvidenceArtifact.collected_at.desc()).all()
     
-    return {"message": "Evidence uploaded", "key": key}
+    return [artifact.to_dict() for artifact in artifacts]
 
 
-# ================================================================
-# LIST EVIDENCE
-# ================================================================
-
-@router.get("/{incident_id}/evidence")
-def list_evidence(
-    incident_id: str
+@router.post("/evidence/{artifact_id}/verify")
+def verify_evidence(
+    artifact_id: str,
+    db: Session = Depends(get_db)
 ):
-    """List all evidence files for an incident"""
+    """
+    Verify evidence integrity by recalculating SHA-256 hash.
+    """
     try:
-        uuid.UUID(incident_id)
+        artifact_uuid = uuid.UUID(artifact_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid incident ID format")
+        raise HTTPException(status_code=400, detail="Invalid artifact ID format")
     
-    s3 = S3Service()
-    files = s3.list_files(incident_id)
-    return {"incident_id": incident_id, "evidence_files": files}
+    artifact = db.query(EvidenceArtifact).filter(
+        EvidenceArtifact.id == artifact_uuid
+    ).first()
+    
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    
+    # Recalculate hash
+    canonical_content = json.dumps(artifact.content, sort_keys=True, default=str)
+    new_hash = hashlib.sha256(canonical_content.encode()).hexdigest()
+    
+    # Get stored hash
+    stored_hash = artifact.hash
+    if stored_hash and stored_hash.startswith("SHA-256:"):
+        stored_hash = stored_hash.replace("SHA-256:", "")
+    
+    verified = new_hash == stored_hash
+    
+    # Update verification status
+    artifact.integrity_verified = verified
+    artifact.verified_at = datetime.utcnow()
+    db.commit()
+    
+    return {
+        "artifact_id": str(artifact.id),
+        "verified": verified,
+        "hash": stored_hash,
+        "new_hash": new_hash,
+        "verified_at": artifact.verified_at.isoformat() if artifact.verified_at else None
+    }
 
 
-# ================================================================
-# DELETE EVIDENCE
-# ================================================================
-
-@router.delete("/{incident_id}/evidence/{filename}")
-def delete_evidence(
-    incident_id: str,
-    filename: str
+@router.get("/evidence/{artifact_id}")
+def get_evidence(
+    artifact_id: str,
+    db: Session = Depends(get_db)
 ):
-    """Delete an evidence file from S3"""
+    """
+    Get a single evidence artifact by ID.
+    """
     try:
-        uuid.UUID(incident_id)
+        artifact_uuid = uuid.UUID(artifact_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid incident ID format")
+        raise HTTPException(status_code=400, detail="Invalid artifact ID format")
     
-    s3 = S3Service()
-    key = f"incidents/{incident_id}/{filename}"
+    artifact = db.query(EvidenceArtifact).filter(
+        EvidenceArtifact.id == artifact_uuid
+    ).first()
+    
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    
+    return artifact.to_dict()
+
+
+@router.get("/evidence/{artifact_id}/download")
+def download_evidence(
+    artifact_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Download evidence artifact as JSON.
+    """
+    from fastapi.responses import JSONResponse
     
     try:
-        s3.client.delete_object(Bucket=s3.bucket, Key=key)
-        return {"message": f"Evidence file {filename} deleted"}
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"File not found: {str(e)}")
+        artifact_uuid = uuid.UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact ID format")
+    
+    artifact = db.query(EvidenceArtifact).filter(
+        EvidenceArtifact.id == artifact_uuid
+    ).first()
+    
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    
+    return JSONResponse(
+        content=artifact.to_dict(),
+        headers={
+            "Content-Disposition": f"attachment; filename=evidence_{artifact_id}.json"
+        }
+    )

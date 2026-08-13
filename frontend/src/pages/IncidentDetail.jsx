@@ -1,187 +1,184 @@
+// frontend/src/pages/IncidentDetail.jsx
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { incidentAPI } from '../services/api';
-import StatusBadge from '../components/StatusBadge';
-import SeverityBadge from '../components/SeverityBadge';
+import { useParams } from 'react-router-dom';
+import EvidenceSection from '../components/evidence/EvidenceSection';
+import api from '../services/api';
 
 const IncidentDetail = () => {
   const { id } = useParams();
-  const navigate = useNavigate();
   const [incident, setIncident] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState(false);
+  const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('details');
 
   useEffect(() => {
     loadIncident();
   }, [id]);
 
   const loadIncident = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const data = await incidentAPI.getById(id);
-      setIncident(data);
+      const response = await api.get(`/incidents/${id}`);
+      setIncident(response.data);
     } catch (err) {
-      console.error('Error loading incident:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleStatusUpdate = async (newStatus) => {
-    setUpdating(true);
-    try {
-      await incidentAPI.updateStatus(id, newStatus);
-      await loadIncident();
-    } catch (err) {
-      console.error('Error updating status:', err);
-    } finally {
-      setUpdating(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (window.confirm('Are you sure you want to delete this incident?')) {
-      try {
-        await incidentAPI.delete(id);
-        navigate('/incidents');
-      } catch (err) {
-        console.error('Error deleting incident:', err);
-      }
-    }
-  };
-
-  const formatTime = (isoString) => {
-    if (!isoString) return 'N/A';
-    const date = new Date(isoString);
-    return date.toLocaleString();
-  };
-
   if (loading) {
-    return <div className="text-center py-8">Loading incident...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-3 text-gray-600">Loading incident...</p>
+        </div>
+      </div>
+    );
   }
 
-  if (!incident) {
-    return <div className="text-center py-8 text-red-500">Incident not found</div>;
+  if (error || !incident) {
+    return (
+      <div className="container mx-auto px-4 py-8">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+          <div className="text-4xl mb-2">❌</div>
+          <h2 className="text-xl font-bold text-red-700">Error loading incident</h2>
+          <p className="text-red-600">{error || 'Incident not found'}</p>
+        </div>
+      </div>
+    );
   }
 
-  const extraData = incident.extra_data || {};
+  const getPriorityColor = (priority) => {
+    const colors = {
+      'CRITICAL': 'bg-red-100 text-red-800',
+      'HIGH': 'bg-orange-100 text-orange-800',
+      'MEDIUM': 'bg-yellow-100 text-yellow-800',
+      'LOW': 'bg-blue-100 text-blue-800'
+    };
+    return colors[priority] || 'bg-gray-100 text-gray-800';
+  };
+
+  const getStatusColor = (status) => {
+    const colors = {
+      'PENDING': 'bg-yellow-100 text-yellow-800',
+      'INVESTIGATING': 'bg-blue-100 text-blue-800',
+      'COMPLETED': 'bg-green-100 text-green-800',
+      'RESOLVED': 'bg-purple-100 text-purple-800'
+    };
+    return colors[status] || 'bg-gray-100 text-gray-800';
+  };
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
-      <div className="bg-white rounded-lg shadow">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-start">
+    <div className="container mx-auto px-4 py-8">
+      {/* Incident Header */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+        <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold">{incident.title}</h1>
-            <div className="flex items-center space-x-4 mt-2">
-              <SeverityBadge severity={incident.priority || incident.severity} />
-              <StatusBadge status={incident.status || 'pending'} />
-              <span className="text-sm text-gray-500">
-                Created: {formatTime(incident.created_at)}
+            <div className="flex items-center space-x-3">
+              <h1 className="text-2xl font-bold text-gray-900">{incident.title}</h1>
+              <span className={`px-2 py-1 text-xs rounded-full ${getPriorityColor(incident.priority)}`}>
+                {incident.priority}
               </span>
-              {extraData.severity_score !== undefined && (
-                <span className="text-sm font-medium text-gray-600">
-                  Score: {extraData.severity_score}/100
-                </span>
+              <span className={`px-2 py-1 text-xs rounded-full ${getStatusColor(incident.status)}`}>
+                {incident.status}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-gray-500">
+              <span>🆔 {incident.id}</span>
+              <span>•</span>
+              <span>📅 {new Date(incident.created_at).toLocaleString()}</span>
+              {incident.assigned_to && (
+                <>
+                  <span>•</span>
+                  <span>👤 Assigned to: {incident.assigned_to}</span>
+                </>
               )}
             </div>
           </div>
+          <div className="flex space-x-2">
+            <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
+              Update Status
+            </button>
+            <button className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm">
+              Assign
+            </button>
+          </div>
+        </div>
+
+        {/* Description */}
+        <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+          <p className="text-gray-700">{incident.description}</p>
+        </div>
+
+        {/* Tags */}
+        {incident.tags && incident.tags.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {incident.tags.map((tag, idx) => (
+              <span key={idx} className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">
+                #{tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200 mb-6">
+        <nav className="flex space-x-8">
           <button
-            onClick={handleDelete}
-            className="text-red-600 hover:text-red-800"
+            onClick={() => setActiveTab('details')}
+            className={`py-2 px-1 border-b-2 text-sm font-medium ${
+              activeTab === 'details'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
           >
-            Delete
+            📋 Details
           </button>
-        </div>
+          <button
+            onClick={() => setActiveTab('evidence')}
+            className={`py-2 px-1 border-b-2 text-sm font-medium ${
+              activeTab === 'evidence'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            📊 Evidence {incident.evidence_count > 0 && `(${incident.evidence_count})`}
+          </button>
+          <button
+            onClick={() => setActiveTab('timeline')}
+            className={`py-2 px-1 border-b-2 text-sm font-medium ${
+              activeTab === 'timeline'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            🕐 Timeline
+          </button>
+        </nav>
+      </div>
 
-        {/* Body */}
-        <div className="px-6 py-4 space-y-6">
-          {/* Description */}
-          <div>
-            <h3 className="text-sm font-medium text-gray-500">Description</h3>
-            <p className="mt-1 text-gray-900">{incident.description || 'No description provided.'}</p>
+      {/* Tab Content */}
+      <div>
+        {activeTab === 'details' && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h2 className="text-lg font-bold mb-4">Incident Details</h2>
+            {/* Add more details here */}
           </div>
+        )}
 
-          {/* Source Info */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <h3 className="text-sm font-medium text-gray-500">Source Type</h3>
-              <p className="mt-1">{incident.source_type || 'N/A'}</p>
-            </div>
-            <div>
-              <h3 className="text-sm font-medium text-gray-500">Source Event ID</h3>
-              <p className="mt-1 text-sm text-gray-600">{incident.source_event_id || 'N/A'}</p>
-            </div>
+        {activeTab === 'evidence' && (
+          <EvidenceSection incidentId={id} />
+        )}
+
+        {activeTab === 'timeline' && (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <h2 className="text-lg font-bold mb-4">Timeline</h2>
+            <p className="text-gray-500">Timeline view coming soon...</p>
           </div>
-
-          {/* Event Context */}
-          {extraData.event_name && (
-            <div>
-              <h3 className="text-sm font-medium text-gray-500">Event Details</h3>
-              <div className="mt-1 grid grid-cols-2 gap-2 text-sm">
-                <div><span className="text-gray-500">Event:</span> {extraData.event_name}</div>
-                <div><span className="text-gray-500">Actor:</span> {extraData.actor || 'N/A'}</div>
-                {extraData.actor_type && (
-                  <div><span className="text-gray-500">Actor Type:</span> {extraData.actor_type}</div>
-                )}
-                {extraData.region && (
-                  <div><span className="text-gray-500">Region:</span> {extraData.region}</div>
-                )}
-                {extraData.source_ip && (
-                  <div><span className="text-gray-500">Source IP:</span> {extraData.source_ip}</div>
-                )}
-                {extraData.timestamp && (
-                  <div><span className="text-gray-500">Event Time:</span> {formatTime(extraData.timestamp)}</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Severity Reason */}
-          {extraData.reason && (
-            <div>
-              <h3 className="text-sm font-medium text-gray-500">Severity Reasoning</h3>
-              <p className="mt-1 text-sm text-gray-600 bg-gray-50 p-3 rounded-md">
-                {extraData.reason}
-              </p>
-            </div>
-          )}
-
-          {/* Tags */}
-          {incident.tags && incident.tags.length > 0 && (
-            <div>
-              <h3 className="text-sm font-medium text-gray-500">Tags</h3>
-              <div className="mt-1 flex flex-wrap gap-2">
-                {incident.tags.map((tag) => (
-                  <span key={tag} className="px-2 py-1 bg-gray-100 rounded-md text-xs">
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Status Update */}
-          <div className="border-t border-gray-200 pt-4">
-            <h3 className="text-sm font-medium text-gray-500 mb-2">Update Status</h3>
-            <div className="flex space-x-2">
-              {['pending', 'investigating', 'completed', 'resolved'].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleStatusUpdate(s)}
-                  disabled={updating || incident.status === s}
-                  className={`px-3 py-1 rounded-md text-sm ${
-                    incident.status === s
-                      ? 'bg-gray-800 text-white'
-                      : 'bg-gray-200 hover:bg-gray-300'
-                  } ${updating ? 'opacity-50' : ''}`}
-                >
-                  {s.charAt(0).toUpperCase() + s.slice(1)}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
