@@ -8,10 +8,59 @@ from datetime import datetime
 import json
 import hashlib
 import uuid
+import re
 
 from app.models.evidence import EvidenceArtifact
 from app.domain.models.incident import Incident
 from app.core.database import SessionLocal
+
+
+def parse_incident_id(incident_id: str) -> uuid.UUID:
+    """
+    Parse incident ID string to UUID.
+    
+    Handles:
+    - inc-abc123def456 -> UUID
+    - abc123def456 -> UUID
+    - Full UUID string -> UUID
+    - Any other string -> deterministic UUID
+    
+    Args:
+        incident_id: The incident ID string
+        
+    Returns:
+        UUID object
+    """
+    # If it's already a UUID string, return it
+    try:
+        return uuid.UUID(incident_id)
+    except (ValueError, TypeError):
+        pass
+    
+    # Remove 'inc-' prefix if present
+    clean_id = incident_id
+    if incident_id.startswith('inc-'):
+        clean_id = incident_id[4:]
+    
+    # Remove any non-hex characters
+    clean_id = re.sub(r'[^a-fA-F0-9]', '', clean_id)
+    
+    # If we have a valid hex string, try to create UUID
+    if clean_id:
+        # Pad to 32 characters if needed
+        if len(clean_id) < 32:
+            clean_id = clean_id.ljust(32, '0')
+        
+        # If length is at least 32, it's a valid UUID
+        if len(clean_id) >= 32:
+            clean_id = clean_id[:32]
+            try:
+                return uuid.UUID(clean_id)
+            except ValueError:
+                pass
+    
+    # Fallback: generate deterministic UUID
+    return uuid.uuid5(uuid.NAMESPACE_DNS, incident_id)
 
 
 class BaseCollector(ABC):
@@ -93,11 +142,7 @@ class BaseCollector(ABC):
     
     def _parse_incident_id(self, incident_id: str) -> uuid.UUID:
         """
-        Parse incident ID string to UUID.
-        Handles various formats:
-        - UUID string: '550e8400-e29b-41d4-a716-446655440000'
-        - Short ID: 'inc-abc123' or 'abc123'
-        - Any other string: generates a new UUID
+        Parse incident ID to UUID using shared utility.
         
         Args:
             incident_id: The incident ID string
@@ -105,27 +150,7 @@ class BaseCollector(ABC):
         Returns:
             UUID object
         """
-        try:
-            # If it's already a valid UUID, return it
-            return uuid.UUID(incident_id)
-        except (ValueError, TypeError):
-            pass
-        
-        # Remove 'inc-' prefix if present
-        clean_id = incident_id
-        if isinstance(incident_id, str) and incident_id.startswith('inc-'):
-            clean_id = incident_id[4:]  # Remove 'inc-'
-        
-        # Generate a deterministic UUID from the string
-        # This ensures the same incident_id always produces the same UUID
-        try:
-            # Use the string to generate a deterministic UUID (v5)
-            namespace = uuid.NAMESPACE_DNS
-            # Use the clean ID as the name
-            return uuid.uuid5(namespace, str(clean_id))
-        except:
-            # If all else fails, generate a random UUID
-            return uuid.uuid4()
+        return parse_incident_id(incident_id)
     
     def save_artifact(self, artifact: EvidenceArtifact) -> bool:
         """

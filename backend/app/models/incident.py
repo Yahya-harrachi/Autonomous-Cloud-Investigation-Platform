@@ -1,5 +1,5 @@
 # app/models/incident.py
-from sqlalchemy import Column, String, DateTime, JSON, Integer, Enum as SQLEnum
+from sqlalchemy import ARRAY, Column, String, DateTime, JSON, Integer, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
@@ -27,7 +27,7 @@ class IncidentModel(Base):
     source_event_id = Column(String(255))
     
     # Additional data
-    tags = Column(JSON, default=list)
+    tags = Column(ARRAY(String), default=list)
     extra_data = Column(JSON, default=dict)
     
     # Assignment

@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
+from app.evidence.orchestrator import EvidenceOrchestrator
+
 from ..domain.models.event import NormalizedEvent
 from ..domain.models.incident import Incident, IncidentStatus, IncidentPriority
 from ..models.incident import IncidentModel
@@ -43,6 +45,10 @@ class IncidentCreator:
             logger.info("✅ Telegram notifier initialized")
         else:
             logger.info("ℹ️ Telegram notifier not configured (optional)")
+
+         # ✅ NEW: Initialize Evidence Orchestrator
+        self.evidence_orchestrator = EvidenceOrchestrator()
+        logger.info("✅ Evidence Orchestrator initialized")
     
     def process_event(self, normalized: NormalizedEvent) -> Optional[Incident]:
         """
@@ -69,6 +75,11 @@ class IncidentCreator:
         
         # 4. Save to database (this will also send Telegram notification)
         self._save_incident(incident)
+
+        
+        # 5. ✅ NEW: Collect evidence asynchronously
+        if incident:
+            self._trigger_evidence_collection(incident)
         
         # ✅ FIX: Use priority.value instead of severity
         print(f"✅ Incident created: {incident.title} ({incident.priority.value})")
@@ -204,6 +215,9 @@ class IncidentCreator:
             db.add(db_incident)
             db.commit()
             db.refresh(db_incident)
+
+            incident._db_id = db_incident.id  # Store the real UUID
+
             logger.info(f"✅ Incident saved to database: {incident.id}")
             
             # ✅ Send Telegram notification after successful save
@@ -238,7 +252,46 @@ class IncidentCreator:
             raise
         finally:
             db.close()
-    
+
+    def _trigger_evidence_collection(self, incident: Incident) -> None:
+        """
+        Trigger evidence collection for an incident.
+        Only for high-severity incidents.
+        
+        Args:
+            incident: The incident to collect evidence for
+        """
+        # Only collect evidence for CRITICAL and HIGH incidents
+        if incident.priority not in [IncidentPriority.CRITICAL, IncidentPriority.HIGH]:
+            logger.info(f"ℹ️ Skipping evidence collection for {incident.priority.value} incident")
+            return
+        
+        logger.info(f"🔍 Triggering evidence collection for incident {incident.id}")
+        
+        try:
+            # Check if we're in an async context
+            try:
+                loop = asyncio.get_running_loop()
+                # If in async context, create a task
+                asyncio.create_task(
+                    self.evidence_orchestrator.orchestrate(incident)
+                )
+                logger.info(f"📋 Evidence collection scheduled for incident {incident.id}")
+            except RuntimeError:
+                # If in sync context, run synchronously
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(
+                        self.evidence_orchestrator.orchestrate(incident)
+                    )
+                    logger.info(f"📋 Evidence collection completed for incident {incident.id}")
+                    logger.info(f"   Collected: {result.get('artifacts_collected', 0)} artifacts")
+                finally:
+                    loop.close()
+        except Exception as e:
+            logger.error(f"❌ Failed to trigger evidence collection: {e}")
+
     def _map_severity_to_priority(self, severity: str) -> IncidentPriority:
         """
         Map severity to incident priority.
