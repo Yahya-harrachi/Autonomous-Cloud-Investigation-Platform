@@ -1,6 +1,6 @@
 # app/evidence/collectors/cloudtrail_collector.py
 """
-CloudTrail Collector - Collects CloudTrail evidence for incidents
+CloudTrail Collector - Collects and organizes CloudTrail evidence
 """
 import boto3
 import json
@@ -20,19 +20,36 @@ logger = logging.getLogger(__name__)
 
 class CloudTrailCollector(BaseCollector):
     """
-    Collects CloudTrail evidence for an incident.
+    Collects CloudTrail evidence for an incident with smart filtering.
     
     Collects:
-    1. Original triggering event
-    2. Related events (30 minutes before and after)
-    3. Builds investigation timeline
+    1. Original triggering event (with full context)
+    2. Related events (5 minutes before and after)
+    3. Builds attack chain timeline
+    4. Identifies patterns
     """
+    
+    # High-priority event types (likely part of attack chain)
+    HIGH_PRIORITY_EVENTS = {
+        'ConsoleLogin', 'CreateUser', 'DeleteUser', 'CreateAccessKey', 
+        'DeleteAccessKey', 'AttachUserPolicy', 'AttachRolePolicy', 
+        'PutUserPolicy', 'PutRolePolicy', 'CreatePolicy', 'DeletePolicy',
+        'UpdateAssumeRolePolicy', 'CreateRole', 'DeleteRole',
+        'UpdateUserPolicy', 'DetachUserPolicy', 'DetachRolePolicy',
+        'CreateLoginProfile', 'DeleteLoginProfile'
+    }
+    
+    # Medium-priority events (reconnaissance)
+    MEDIUM_PRIORITY_EVENTS = {
+        'ListUsers', 'ListGroups', 'ListPolicies', 'GetUser',
+        'GetPolicy', 'ListAttachedUserPolicies', 'ListAccessKeys',
+        'GetAccessKeyLastUsed', 'ListSigningCertificates'
+    }
     
     def __init__(self):
         super().__init__()
         self.collector_name = "CloudTrailCollector"
         
-        # Initialize AWS clients
         self.cloudtrail = boto3.client(
             'cloudtrail',
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
@@ -49,12 +66,12 @@ class CloudTrailCollector(BaseCollector):
     
     async def collect(self, incident: Incident) -> Optional[EvidenceArtifact]:
         """
-        Collect CloudTrail evidence for an incident.
+        Collect CloudTrail evidence with smart filtering.
         """
         logger.info(f"🔍 CloudTrailCollector collecting evidence for incident {incident.id}")
         
         try:
-            # 1. Extract event details from incident
+            # 1. Extract event details
             event_data = incident.normalized_event
             event_name = event_data.get('event_name')
             event_time_str = event_data.get('timestamp') or event_data.get('event_time')
@@ -62,8 +79,7 @@ class CloudTrailCollector(BaseCollector):
             region = event_data.get('region', settings.AWS_DEFAULT_REGION)
             
             if not event_name:
-                logger.error(f"❌ No event_name found in incident {incident.id}")
-                return self._create_failed_artifact(incident.id, "No event_name found in incident")
+                return self._create_failed_artifact(incident.id, "No event_name found")
             
             # 2. Parse event time
             if isinstance(event_time_str, str):
@@ -74,59 +90,58 @@ class CloudTrailCollector(BaseCollector):
             else:
                 event_time = event_time_str or datetime.utcnow()
             
-            # 3. Calculate time window (30 minutes before and after)
-            start_time = event_time - timedelta(minutes=30)
-            end_time = event_time + timedelta(minutes=30)
+            # 3. Expanded time window (10 minutes before, 5 minutes after for better context)
+            start_time = event_time - timedelta(minutes=10)
+            end_time = event_time + timedelta(minutes=5)
             
             logger.info(f"📅 Time window: {start_time} to {end_time}")
             logger.info(f"🎯 Event: {event_name}, Actor: {actor}")
             
-            # 4. Collect original event
-            original_event = await self._get_original_event(
-                event_name=event_name,
-                event_time=event_time,
+            # 4. Collect all events in window
+            all_events = await self._get_events_in_window(
+                start_time=start_time,
+                end_time=end_time,
                 actor=actor
             )
             
-            # 5. Collect related events
-            related_events = await self._get_related_events(
-                start_time=start_time,
-                end_time=end_time,
-                actor=actor,
-                event_name=event_name
-            )
+            # 5. Categorize and prioritize events
+            categorized = self._categorize_events(all_events, event_name, actor)
             
-            # 6. Build timeline
-            timeline = self._build_timeline(original_event, related_events)
+            # 6. Build attack chain timeline
+            timeline = self._build_attack_chain(categorized, event_name, event_time)
             
-            # 7. Create artifact content
+            # 7. Detect patterns
+            patterns = self._detect_patterns(timeline, categorized)
+            
+            # 8. Create summary
+            summary = self._create_summary(categorized, timeline, patterns)
+            
+            # 9. Build content
             content = {
-                "original_event": original_event,
-                "related_events": related_events,
+                "original_event": self._find_original_event(all_events, event_name, event_time),
+                "categorized_events": categorized,
                 "timeline": timeline,
+                "patterns": patterns,
+                "summary": summary,
                 "time_window": {
                     "start": start_time.isoformat(),
                     "end": end_time.isoformat(),
                     "trigger": event_time.isoformat()
-                },
-                "summary": {
-                    "total_events": len(related_events) + (1 if original_event else 0),
-                    "unique_actors": self._get_unique_actors(related_events),
-                    "event_types": self._get_event_types(related_events)
                 }
             }
             
-            # 8. Create metadata
+            # 10. Create metadata
             extra_data = {
                 "event_name": event_name,
                 "actor": actor,
                 "region": region,
-                "time_window": "30min",
-                "event_count": len(related_events) + 1,
-                "original_event_found": original_event is not None
+                "total_events": len(all_events),
+                "high_priority_count": len(categorized.get('high_priority', [])),
+                "medium_priority_count": len(categorized.get('medium_priority', [])),
+                "patterns_found": len(patterns)
             }
             
-            # 9. Create artifact
+            # 11. Create artifact
             artifact = self.create_artifact(
                 incident_id=incident.id,
                 content=content,
@@ -135,173 +150,297 @@ class CloudTrailCollector(BaseCollector):
             )
             
             logger.info(f"✅ CloudTrail evidence collected for incident {incident.id}")
-            logger.info(f"   📊 Collected {len(related_events)} related events")
-            logger.info(f"   🕐 Time range: {start_time} to {end_time}")
+            logger.info(f"   📊 Total events: {len(all_events)}")
+            logger.info(f"   🎯 High priority: {len(categorized.get('high_priority', []))}")
+            logger.info(f"   🔍 Patterns found: {len(patterns)}")
             
             return artifact
             
         except ClientError as e:
-            logger.error(f"❌ AWS API error collecting CloudTrail evidence: {e}")
-            return self._create_failed_artifact(incident.id, f"AWS Error: {str(e)}")
-            
+            logger.error(f"❌ AWS API error: {e}")
+            return self._create_failed_artifact(incident.id, str(e))
         except Exception as e:
-            logger.error(f"❌ Error collecting CloudTrail evidence: {e}")
+            logger.error(f"❌ Error: {e}")
             return self._create_failed_artifact(incident.id, str(e))
     
-    async def _get_original_event(
-        self,
-        event_name: str,
-        event_time: datetime,
-        actor: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Get the original triggering event from CloudTrail."""
-        try:
-            response = self.cloudtrail.lookup_events(
-                LookupAttributes=[
-                    {
-                        'AttributeKey': 'EventName',
-                        'AttributeValue': event_name
-                    }
-                ],
-                StartTime=event_time - timedelta(minutes=1),
-                EndTime=event_time + timedelta(minutes=1),
-                MaxResults=1
-            )
-            
-            events = response.get('Events', [])
-            
-            if events:
-                event_data = json.loads(events[0].get('CloudTrailEvent', '{}'))
-                
-                if actor:
-                    user_identity = event_data.get('userIdentity', {})
-                    user_name = user_identity.get('userName') or user_identity.get('principalId')
-                    if user_name and user_name != actor:
-                        logger.warning(f"⚠️ Actor mismatch: {user_name} != {actor}")
-                
-                logger.info(f"✅ Found original event: {event_name}")
-                return event_data
-            
-            logger.warning(f"⚠️ Original event not found: {event_name}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting original event: {e}")
-            return None
-    
-    async def _get_related_events(
+    async def _get_events_in_window(
         self,
         start_time: datetime,
         end_time: datetime,
-        actor: Optional[str] = None,
-        event_name: Optional[str] = None
+        actor: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get related events within the time window."""
+        """Get all events in the time window."""
+        all_events = []
+        
         try:
-            events = []
-            
-            # Strategy 1: Look by actor if available
+            # Try to get events by actor first
             if actor:
                 try:
                     response = self.cloudtrail.lookup_events(
                         LookupAttributes=[
-                            {
-                                'AttributeKey': 'Username',
-                                'AttributeValue': actor
-                            }
+                            {'AttributeKey': 'Username', 'AttributeValue': actor}
                         ],
                         StartTime=start_time,
                         EndTime=end_time,
-                        MaxResults=50
+                        MaxResults=100
                     )
                     events = response.get('Events', [])
-                    logger.info(f"📊 Found {len(events)} events by actor: {actor}")
-                except:
-                    pass
+                    for event in events:
+                        try:
+                            event_data = json.loads(event.get('CloudTrailEvent', '{}'))
+                            all_events.append(event_data)
+                        except:
+                            continue
+                except Exception as e:
+                    logger.warning(f"⚠️ Error getting events by actor: {e}")
             
-            # Strategy 2: If no events found, look by event name
-            if not events and event_name:
-                try:
-                    response = self.cloudtrail.lookup_events(
-                        LookupAttributes=[
-                            {
-                                'AttributeKey': 'EventName',
-                                'AttributeValue': event_name
-                            }
-                        ],
-                        StartTime=start_time,
-                        EndTime=end_time,
-                        MaxResults=50
-                    )
-                    events = response.get('Events', [])
-                    logger.info(f"📊 Found {len(events)} events by event name: {event_name}")
-                except:
-                    pass
+            # If no events found, get all events in window
+            if not all_events:
+                response = self.cloudtrail.lookup_events(
+                    LookupAttributes=[],
+                    StartTime=start_time,
+                    EndTime=end_time,
+                    MaxResults=100
+                )
+                events = response.get('Events', [])
+                for event in events:
+                    try:
+                        event_data = json.loads(event.get('CloudTrailEvent', '{}'))
+                        all_events.append(event_data)
+                    except:
+                        continue
             
-            # Strategy 3: Get all events in time window
-            if not events:
-                try:
-                    response = self.cloudtrail.lookup_events(
-                        LookupAttributes=[],
-                        StartTime=start_time,
-                        EndTime=end_time,
-                        MaxResults=50
-                    )
-                    events = response.get('Events', [])
-                    logger.info(f"📊 Found {len(events)} events in time window")
-                except:
-                    pass
-            
-            # Parse events
-            parsed_events = []
-            for event in events:
-                try:
-                    event_data = json.loads(event.get('CloudTrailEvent', '{}'))
-                    parsed_events.append(event_data)
-                except:
-                    continue
-            
-            return parsed_events
+            return all_events
             
         except Exception as e:
-            logger.error(f"❌ Error getting related events: {e}")
+            logger.error(f"❌ Error getting events: {e}")
             return []
     
-    def _build_timeline(
+    def _categorize_events(
         self,
-        original_event: Optional[Dict[str, Any]],
-        related_events: List[Dict[str, Any]]
+        events: List[Dict[str, Any]],
+        trigger_event: str,
+        actor: str
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Categorize events by priority.
+        """
+        result = {
+            'trigger': [],
+            'high_priority': [],
+            'medium_priority': [],
+            'other': [],
+            'reconnaissance': []
+        }
+        
+        for event in events:
+            event_name = event.get('eventName', 'Unknown')
+            
+            # Check if this is the trigger event
+            if event_name == trigger_event:
+                result['trigger'].append(event)
+            elif event_name in self.HIGH_PRIORITY_EVENTS:
+                result['high_priority'].append(event)
+            elif event_name in self.MEDIUM_PRIORITY_EVENTS:
+                result['medium_priority'].append(event)
+            elif self._is_reconnaissance_event(event_name):
+                result['reconnaissance'].append(event)
+            else:
+                result['other'].append(event)
+        
+        return result
+    
+    def _is_reconnaissance_event(self, event_name: str) -> bool:
+        """Check if event is reconnaissance."""
+        recon_patterns = ['Describe', 'List', 'Get', 'Lookup', 'Search']
+        return any(event_name.startswith(pattern) for pattern in recon_patterns)
+    
+    def _find_original_event(
+        self,
+        events: List[Dict[str, Any]],
+        event_name: str,
+        event_time: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Find the original triggering event."""
+        for event in events:
+            if event.get('eventName') == event_name:
+                # Check if it's within 1 minute of the trigger time
+                event_time_str = event.get('eventTime')
+                if event_time_str:
+                    try:
+                        event_dt = datetime.fromisoformat(event_time_str.replace('Z', '+00:00'))
+                        if abs((event_dt - event_time).total_seconds()) < 60:
+                            return event
+                    except:
+                        pass
+        return None
+    
+    def _build_attack_chain(
+        self,
+        categorized: Dict[str, List[Dict[str, Any]]],
+        trigger_event: str,
+        trigger_time: datetime
     ) -> List[Dict[str, Any]]:
-        """Build a chronological timeline of events."""
+        """
+        Build attack chain timeline with priorities.
+        """
         timeline = []
         
-        if original_event:
+        # Start with trigger event
+        trigger_events = categorized.get('trigger', [])
+        for event in trigger_events:
             timeline.append({
-                "event_name": original_event.get('eventName', 'Unknown'),
-                "event_time": original_event.get('eventTime'),
-                "actor": self._get_actor_from_event(original_event),
-                "source_ip": original_event.get('sourceIPAddress'),
-                "region": original_event.get('awsRegion'),
-                "event_id": original_event.get('eventID'),
-                "is_trigger": True
+                'event_name': event.get('eventName', 'Unknown'),
+                'event_time': event.get('eventTime'),
+                'actor': self._get_actor_from_event(event),
+                'source_ip': event.get('sourceIPAddress'),
+                'region': event.get('awsRegion'),
+                'event_id': event.get('eventID'),
+                'priority': 'trigger',
+                'icon': '🚨',
+                'label': 'TRIGGER'
             })
         
-        for event in related_events:
-            if original_event and event.get('eventID') == original_event.get('eventID'):
-                continue
-                
+        # Add high priority events (attack chain)
+        high_priority = categorized.get('high_priority', [])
+        for event in high_priority:
+            event_time = event.get('eventTime')
+            is_before = True
+            if event_time:
+                try:
+                    event_dt = datetime.fromisoformat(event_time.replace('Z', '+00:00'))
+                    is_before = event_dt < trigger_time
+                except:
+                    pass
+            
             timeline.append({
-                "event_name": event.get('eventName', 'Unknown'),
-                "event_time": event.get('eventTime'),
-                "actor": self._get_actor_from_event(event),
-                "source_ip": event.get('sourceIPAddress'),
-                "region": event.get('awsRegion'),
-                "event_id": event.get('eventID'),
-                "is_trigger": False
+                'event_name': event.get('eventName', 'Unknown'),
+                'event_time': event_time,
+                'actor': self._get_actor_from_event(event),
+                'source_ip': event.get('sourceIPAddress'),
+                'region': event.get('awsRegion'),
+                'event_id': event.get('eventID'),
+                'priority': 'high',
+                'icon': '🔴' if not is_before else '🟠',
+                'label': 'POST-ACTION' if not is_before else 'PRE-ACTION'
             })
         
+        # Add reconnaissance events
+        recon = categorized.get('reconnaissance', [])
+        for event in recon[:5]:  # Limit recon events
+            timeline.append({
+                'event_name': event.get('eventName', 'Unknown'),
+                'event_time': event.get('eventTime'),
+                'actor': self._get_actor_from_event(event),
+                'source_ip': event.get('sourceIPAddress'),
+                'region': event.get('awsRegion'),
+                'event_id': event.get('eventID'),
+                'priority': 'recon',
+                'icon': '🔍',
+                'label': 'RECON'
+            })
+        
+        # Sort by time
         timeline.sort(key=lambda x: x.get('event_time', ''))
+        
         return timeline
+    
+    def _detect_patterns(
+        self,
+        timeline: List[Dict[str, Any]],
+        categorized: Dict[str, List[Dict[str, Any]]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect attack patterns.
+        """
+        patterns = []
+        event_names = [e.get('event_name', '') for e in timeline]
+        
+        # Pattern 1: User creation + access key creation
+        if 'CreateUser' in event_names and 'CreateAccessKey' in event_names:
+            patterns.append({
+                'type': 'privilege_escalation',
+                'severity': 'high',
+                'description': 'User created then access key created',
+                'recommendation': 'Check if user was legitimate'
+            })
+        
+        # Pattern 2: Policy attachment after user creation
+        if 'CreateUser' in event_names and any(p in event_names for p in ['AttachUserPolicy', 'PutUserPolicy']):
+            patterns.append({
+                'type': 'privilege_escalation',
+                'severity': 'critical',
+                'description': 'User created then policy attached - possible privilege escalation',
+                'recommendation': 'Review attached policies immediately'
+            })
+        
+        # Pattern 3: Reconnaissance followed by action
+        recon_count = len(categorized.get('reconnaissance', []))
+        high_priority_count = len(categorized.get('high_priority', []))
+        if recon_count > 2 and high_priority_count > 0:
+            patterns.append({
+                'type': 'attack_pattern',
+                'severity': 'high',
+                'description': f'Reconnaissance ({recon_count} events) followed by destructive action',
+                'recommendation': 'Investigate actor behavior pattern'
+            })
+        
+        # Pattern 4: Multiple access keys
+        if event_names.count('CreateAccessKey') > 1:
+            patterns.append({
+                'type': 'credential_misuse',
+                'severity': 'medium',
+                'description': 'Multiple access keys created - possible credential theft',
+                'recommendation': 'Review all access keys and rotate immediately'
+            })
+        
+        # Pattern 5: Off-hours activity
+        # Check if activity occurred outside business hours (assuming 9-5)
+        off_hours_events = []
+        for event in timeline:
+            event_time = event.get('event_time')
+            if event_time:
+                try:
+                    dt = datetime.fromisoformat(event_time.replace('Z', '+00:00'))
+                    hour = dt.hour
+                    if hour < 8 or hour > 18 or dt.weekday() > 4:
+                        off_hours_events.append(event)
+                except:
+                    pass
+        
+        if len(off_hours_events) > 2:
+            patterns.append({
+                'type': 'off_hours_activity',
+                'severity': 'medium',
+                'description': f'{len(off_hours_events)} events occurred outside business hours',
+                'recommendation': 'Verify if activity was authorized'
+            })
+        
+        return patterns
+    
+    def _create_summary(
+        self,
+        categorized: Dict[str, List[Dict[str, Any]]],
+        timeline: List[Dict[str, Any]],
+        patterns: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Create a summary of the evidence."""
+        return {
+            'total_events': len(timeline),
+            'high_priority_events': len(categorized.get('high_priority', [])),
+            'reconnaissance_events': len(categorized.get('reconnaissance', [])),
+            'patterns_found': len(patterns),
+            'unique_actors': self._get_unique_actors(timeline),
+            'event_types': self._get_event_types(timeline),
+            'security_alerts': [
+                {
+                    'severity': p.get('severity'),
+                    'description': p.get('description'),
+                    'recommendation': p.get('recommendation')
+                }
+                for p in patterns
+            ]
+        }
     
     def _get_actor_from_event(self, event: Dict[str, Any]) -> str:
         """Extract actor name from event."""
@@ -309,25 +448,25 @@ class CloudTrailCollector(BaseCollector):
         return user_identity.get('userName') or user_identity.get('principalId') or 'Unknown'
     
     def _get_unique_actors(self, events: List[Dict[str, Any]]) -> List[str]:
-        """Get unique actors from events."""
+        """Get unique actors."""
         actors = set()
         for event in events:
-            actor = self._get_actor_from_event(event)
+            actor = event.get('actor')
             if actor and actor != 'Unknown':
                 actors.add(actor)
         return list(actors)
     
     def _get_event_types(self, events: List[Dict[str, Any]]) -> List[str]:
-        """Get unique event types from events."""
-        event_types = set()
+        """Get unique event types."""
+        types = set()
         for event in events:
-            event_name = event.get('eventName', 'Unknown')
+            event_name = event.get('event_name')
             if event_name:
-                event_types.add(event_name)
-        return list(event_types)
+                types.add(event_name)
+        return list(types)
     
     def _create_failed_artifact(self, incident_id: str, error_message: str) -> EvidenceArtifact:
-        """Create a failed artifact when collection fails."""
+        """Create a failed artifact."""
         incident_uuid = self._parse_incident_id(incident_id)
         
         artifact = EvidenceArtifact(
