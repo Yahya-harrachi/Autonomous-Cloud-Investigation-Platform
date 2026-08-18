@@ -177,10 +177,17 @@ def update_incident_status(
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     
-    if status not in [s.value for s in IncidentStatus]:
-        raise HTTPException(status_code=400, detail="Invalid status")
+    # ✅ Fix: Accept both lowercase and uppercase
+    status_lower = status.lower()
+    valid_statuses = [s.value for s in IncidentStatus]  # ["pending", "investigating", "completed", "resolved"]
     
-    incident.status = status
+    if status_lower not in valid_statuses:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+        )
+    
+    incident.status = status_lower  # ✅ Store lowercase
     db.commit()
     db.refresh(incident)
     
@@ -198,7 +205,6 @@ def update_incident_status(
         "created_at": incident.created_at,
         "updated_at": incident.updated_at
     }
-
 
 # ================================================================
 # UPDATE INCIDENT PRIORITY

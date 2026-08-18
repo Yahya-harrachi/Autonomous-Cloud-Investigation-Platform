@@ -2,6 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import EvidenceSection from '../components/evidence/EvidenceSection';
+import TimelineSection from '../components/evidence/TimelineSection';
+import IncidentDetails from '../components/incident/IncidentDetails';
 import api from '../services/api';
 
 const IncidentDetail = () => {
@@ -10,6 +12,7 @@ const IncidentDetail = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('details');
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     loadIncident();
@@ -22,10 +25,33 @@ const IncidentDetail = () => {
       setIncident(response.data);
     } catch (err) {
       setError(err.message);
+      console.error('Error loading incident:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  const handleStatusUpdate = async (newStatus) => {
+  setUpdating(true);
+  try {
+    console.log(`📤 Updating status to: ${newStatus}`);
+    
+    // ✅ Use PUT with /status endpoint
+    const response = await api.put(`/incidents/${incident.id}/status`, null, {
+      params: { status: newStatus }
+    });
+    
+    console.log('📥 Response:', response.data);
+    setIncident(response.data);
+    await loadIncident();
+    
+  } catch (err) {
+    console.error('❌ Error updating status:', err);
+    alert('Failed to update status: ' + (err.response?.data?.detail || err.message));
+  } finally {
+    setUpdating(false);
+  }
+};
 
   if (loading) {
     return (
@@ -70,14 +96,16 @@ const IncidentDetail = () => {
     return colors[status] || 'bg-gray-100 text-gray-800';
   };
 
+  const statusOptions = ['pending', 'investigating', 'completed', 'resolved'];
+
   return (
     <div className="container mx-auto px-4 py-8">
       {/* Incident Header */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <div className="flex items-center space-x-3">
-              <h1 className="text-2xl font-bold text-gray-900">{incident.title}</h1>
+        <div className="flex items-start justify-between flex-wrap gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center space-x-3 flex-wrap gap-2">
+              <h1 className="text-2xl font-bold text-gray-900 truncate">{incident.title}</h1>
               <span className={`px-2 py-1 text-xs rounded-full ${getPriorityColor(incident.priority)}`}>
                 {incident.priority}
               </span>
@@ -89,27 +117,37 @@ const IncidentDetail = () => {
               <span>🆔 {incident.id}</span>
               <span>•</span>
               <span>📅 {new Date(incident.created_at).toLocaleString()}</span>
-              {incident.assigned_to && (
-                <>
-                  <span>•</span>
-                  <span>👤 Assigned to: {incident.assigned_to}</span>
-                </>
-              )}
             </div>
           </div>
-          <div className="flex space-x-2">
-            <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
-              Update Status
-            </button>
-            <button className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm">
-              Assign
-            </button>
+          
+          {/* ✅ Only Update Status button - Remove Assign */}
+          <div className="flex space-x-2 flex-wrap gap-2">
+            <div className="relative">
+              <select
+                value={incident.status}
+                onChange={(e) => handleStatusUpdate(e.target.value)}
+                disabled={updating}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm border-none appearance-none cursor-pointer disabled:opacity-50"
+              >
+                {statusOptions.map((status) => (
+                  <option key={status} value={status} className="text-gray-900 bg-white">
+                    {status === 'pending' ? '⏳ Pending' :
+                     status === 'investigating' ? '🔍 Investigating' :
+                     status === 'completed' ? '✅ Completed' :
+                     '🔒 Resolved'}
+                  </option>
+                ))}
+              </select>
+              <span className="absolute right-2 top-1/2 transform -translate-y-1/2 text-white pointer-events-none">
+                ▼
+              </span>
+            </div>
           </div>
         </div>
 
         {/* Description */}
         <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-          <p className="text-gray-700">{incident.description}</p>
+          <p className="text-gray-700 whitespace-pre-wrap">{incident.description}</p>
         </div>
 
         {/* Tags */}
@@ -126,10 +164,10 @@ const IncidentDetail = () => {
 
       {/* Tabs */}
       <div className="border-b border-gray-200 mb-6">
-        <nav className="flex space-x-8">
+        <nav className="flex space-x-8 overflow-x-auto">
           <button
             onClick={() => setActiveTab('details')}
-            className={`py-2 px-1 border-b-2 text-sm font-medium ${
+            className={`py-2 px-1 border-b-2 text-sm font-medium whitespace-nowrap ${
               activeTab === 'details'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -139,7 +177,7 @@ const IncidentDetail = () => {
           </button>
           <button
             onClick={() => setActiveTab('evidence')}
-            className={`py-2 px-1 border-b-2 text-sm font-medium ${
+            className={`py-2 px-1 border-b-2 text-sm font-medium whitespace-nowrap ${
               activeTab === 'evidence'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -149,7 +187,7 @@ const IncidentDetail = () => {
           </button>
           <button
             onClick={() => setActiveTab('timeline')}
-            className={`py-2 px-1 border-b-2 text-sm font-medium ${
+            className={`py-2 px-1 border-b-2 text-sm font-medium whitespace-nowrap ${
               activeTab === 'timeline'
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -163,10 +201,7 @@ const IncidentDetail = () => {
       {/* Tab Content */}
       <div>
         {activeTab === 'details' && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-lg font-bold mb-4">Incident Details</h2>
-            {/* Add more details here */}
-          </div>
+          <IncidentDetails incident={incident} onUpdate={loadIncident} />
         )}
 
         {activeTab === 'evidence' && (
@@ -174,10 +209,7 @@ const IncidentDetail = () => {
         )}
 
         {activeTab === 'timeline' && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-lg font-bold mb-4">Timeline</h2>
-            <p className="text-gray-500">Timeline view coming soon...</p>
-          </div>
+          <TimelineSection incidentId={id} />
         )}
       </div>
     </div>

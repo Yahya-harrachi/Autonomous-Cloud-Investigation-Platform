@@ -91,8 +91,8 @@ class CloudTrailCollector(BaseCollector):
                 event_time = event_time_str or datetime.utcnow()
             
             # 3. Expanded time window (10 minutes before, 5 minutes after for better context)
-            start_time = event_time - timedelta(minutes=10)
-            end_time = event_time + timedelta(minutes=5)
+            start_time = event_time - timedelta(minutes=30)
+            end_time = event_time + timedelta(minutes=15)
             
             logger.info(f"📅 Time window: {start_time} to {end_time}")
             logger.info(f"🎯 Event: {event_name}, Actor: {actor}")
