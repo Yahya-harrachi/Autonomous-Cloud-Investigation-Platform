@@ -300,13 +300,170 @@ def get_incident_evidence(
 
 
 @router.post("/evidence/{artifact_id}/verify")
-def verify_evidence(
+async def verify_evidence(
     artifact_id: str,
     db: Session = Depends(get_db)
 ):
     """
     Verify evidence integrity by recalculating SHA-256 hash.
     """
+    try:
+        # Parse artifact ID
+        try:
+            artifact_uuid = uuid.UUID(artifact_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid artifact ID format")
+        
+        # Get artifact
+        artifact = db.query(EvidenceArtifact).filter(
+            EvidenceArtifact.id == artifact_uuid
+        ).first()
+        
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        
+        # If no hash, can't verify
+        if not artifact.hash or artifact.hash == 'N/A':
+            return {
+                "artifact_id": str(artifact.id),
+                "verified": False,
+                "message": "No hash available to verify",
+                "verified_at": None
+            }
+        
+        # Recalculate hash
+        canonical_content = json.dumps(artifact.content, sort_keys=True, default=str)
+        new_hash = hashlib.sha256(canonical_content.encode()).hexdigest()
+        
+        # Get stored hash (remove "SHA-256:" prefix if present)
+        stored_hash = artifact.hash
+        if stored_hash and stored_hash.startswith("SHA-256:"):
+            stored_hash = stored_hash.replace("SHA-256:", "")
+        
+        verified = new_hash == stored_hash
+        
+        # Update verification status
+        artifact.integrity_verified = verified
+        artifact.verified_at = datetime.utcnow()
+        db.commit()
+        
+        return {
+            "artifact_id": str(artifact.id),
+            "verified": verified,
+            "hash": stored_hash,
+            "new_hash": new_hash,
+            "verified_at": artifact.verified_at.isoformat() if artifact.verified_at else None,
+            "message": "Integrity verified successfully" if verified else "Hash mismatch - evidence may be tampered!"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error verifying evidence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# BATCH VERIFY ALL EVIDENCE FOR AN INCIDENT
+# ============================================================
+
+@router.post("/{incident_id}/evidence/verify-all")
+async def batch_verify_evidence(
+    incident_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Batch verify all evidence artifacts for an incident.
+    """
+    try:
+        # Parse incident ID
+        incident_uuid = parse_incident_id(incident_id)
+        
+        # Check if incident exists
+        incident = db.query(IncidentModel).filter(
+            IncidentModel.id == incident_uuid
+        ).first()
+        
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        
+        # Get all evidence artifacts
+        artifacts = db.query(EvidenceArtifact).filter(
+            EvidenceArtifact.incident_id == incident_uuid
+        ).all()
+        
+        results = []
+        verified_count = 0
+        failed_count = 0
+        no_hash_count = 0
+        
+        for artifact in artifacts:
+            if not artifact.hash or artifact.hash == 'N/A':
+                no_hash_count += 1
+                results.append({
+                    "artifact_id": str(artifact.id),
+                    "artifact_type": artifact.artifact_type,
+                    "verified": False,
+                    "message": "No hash available"
+                })
+                continue
+            
+            # Recalculate hash
+            canonical_content = json.dumps(artifact.content, sort_keys=True, default=str)
+            new_hash = hashlib.sha256(canonical_content.encode()).hexdigest()
+            
+            stored_hash = artifact.hash
+            if stored_hash and stored_hash.startswith("SHA-256:"):
+                stored_hash = stored_hash.replace("SHA-256:", "")
+            
+            verified = new_hash == stored_hash
+            
+            # Update verification status
+            artifact.integrity_verified = verified
+            artifact.verified_at = datetime.utcnow()
+            
+            if verified:
+                verified_count += 1
+            else:
+                failed_count += 1
+            
+            results.append({
+                "artifact_id": str(artifact.id),
+                "artifact_type": artifact.artifact_type,
+                "verified": verified,
+                "message": "Verified" if verified else "Hash mismatch"
+            })
+        
+        db.commit()
+        
+        return {
+            "incident_id": incident_id,
+            "total_artifacts": len(artifacts),
+            "verified_count": verified_count,
+            "failed_count": failed_count,
+            "no_hash_count": no_hash_count,
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error batch verifying evidence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/evidence/{artifact_id}/verify")
+async def verify_single_evidence(
+    artifact_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Verify a single evidence artifact by ID (via incidents router).
+    """
+    import hashlib
+    import json
+    from datetime import datetime
+    import uuid
+    
     try:
         artifact_uuid = uuid.UUID(artifact_id)
     except ValueError:
@@ -319,18 +476,23 @@ def verify_evidence(
     if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
     
-    # Recalculate hash
+    if not artifact.hash or artifact.hash == 'N/A':
+        return {
+            "artifact_id": str(artifact.id),
+            "verified": False,
+            "message": "No hash available to verify",
+            "verified_at": None
+        }
+    
     canonical_content = json.dumps(artifact.content, sort_keys=True, default=str)
     new_hash = hashlib.sha256(canonical_content.encode()).hexdigest()
     
-    # Get stored hash
     stored_hash = artifact.hash
     if stored_hash and stored_hash.startswith("SHA-256:"):
         stored_hash = stored_hash.replace("SHA-256:", "")
     
     verified = new_hash == stored_hash
     
-    # Update verification status
     artifact.integrity_verified = verified
     artifact.verified_at = datetime.utcnow()
     db.commit()
@@ -340,12 +502,15 @@ def verify_evidence(
         "verified": verified,
         "hash": stored_hash,
         "new_hash": new_hash,
-        "verified_at": artifact.verified_at.isoformat() if artifact.verified_at else None
+        "verified_at": artifact.verified_at.isoformat() if artifact.verified_at else None,
+        "message": "Integrity verified successfully" if verified else "Hash mismatch - evidence may be tampered!"
     }
-
+# ============================================================
+# GET SINGLE EVIDENCE
+# ============================================================
 
 @router.get("/evidence/{artifact_id}")
-def get_evidence(
+async def get_evidence(
     artifact_id: str,
     db: Session = Depends(get_db)
 ):

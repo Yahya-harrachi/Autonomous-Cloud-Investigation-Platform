@@ -48,7 +48,7 @@ async def root():
     return {
         "message": "ACIP API is running",
         "status": "healthy",
-        "version": "0.1.0"
+        "version": "0.1.2"
     }
 
 @app.get("/health")

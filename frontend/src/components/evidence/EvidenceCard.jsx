@@ -1,5 +1,5 @@
 // frontend/src/components/evidence/EvidenceCard.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { verifyEvidence } from '../../services/evidence';
 
 // ============================================================
@@ -8,13 +8,7 @@ import { verifyEvidence } from '../../services/evidence';
 const CloudTrailSummary = ({ content }) => {
   const summary = content?.summary || {};
   const timeline = content?.timeline || [];
-  const timeWindow = content?.time_window || {};
   const patterns = content?.patterns || [];
-  const categorized = content?.categorized_events || {};
-  
-  // Get high priority events for display
-  const highPriorityEvents = categorized?.high_priority || [];
-  const reconEvents = categorized?.reconnaissance || [];
   
   return (
     <div className="space-y-3">
@@ -138,8 +132,6 @@ const CloudTrailSummary = ({ content }) => {
 const IAMSummary = ({ content }) => {
   const user = content?.user || {};
   const summary = content?.summary || {};
-  const attachedPolicies = content?.attached_policies || [];
-  const groups = content?.groups || [];
   const accessKeys = content?.access_keys || [];
 
   return (
@@ -321,9 +313,6 @@ const IAMPolicySummary = ({ content }) => {
   );
 };
 
-
-
-
 // ============================================================
 // IAM ROLE SUMMARY COMPONENT
 // ============================================================
@@ -412,21 +401,56 @@ const IAMRoleSummary = ({ content }) => {
 };
 
 // ============================================================
-// MAIN EVIDENCE CARD COMPONENT
+// MAIN EVIDENCE CARD COMPONENT - WITH AUTO-VERIFY
 // ============================================================
-const EvidenceCard = ({ artifact }) => {
+const EvidenceCard = ({ artifact, autoVerify = true }) => {
   const [verifying, setVerifying] = useState(false);
-  const [verified, setVerified] = useState(artifact.integrity_verified);
+  const [verified, setVerified] = useState(artifact.integrity_verified || false);
   const [verificationResult, setVerificationResult] = useState(null);
+  const [autoVerified, setAutoVerified] = useState(false);
 
-  const handleVerify = async () => {
+  // ✅ Auto-verify on mount if not already verified
+  useEffect(() => {
+    if (autoVerify && !artifact.integrity_verified && !autoVerified) {
+      // Only auto-verify if hash exists
+      if (artifact.hash && artifact.hash !== 'N/A') {
+        const timer = setTimeout(() => {
+          handleVerify(true);
+        }, 500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, []);
+
+  const handleVerify = async (silent = false) => {
+    if (!artifact.hash || artifact.hash === 'N/A') {
+      if (!silent) {
+        setVerificationResult({
+          verified: false,
+          message: 'No hash available to verify'
+        });
+      }
+      return;
+    }
+
     setVerifying(true);
     try {
       const result = await verifyEvidence(artifact.id);
       setVerified(result.verified);
       setVerificationResult(result);
+      setAutoVerified(true);
+      
+      if (!silent) {
+        console.log(`🔐 Verification result for ${artifact.artifact_type}:`, result.verified ? '✅ Verified' : '❌ Failed');
+      }
     } catch (error) {
       console.error('Verification failed:', error);
+      if (!silent) {
+        setVerificationResult({
+          verified: false,
+          message: 'Verification service error'
+        });
+      }
     } finally {
       setVerifying(false);
     }
@@ -469,6 +493,22 @@ const EvidenceCard = ({ artifact }) => {
     return badges[status] || status;
   };
 
+  // ✅ Get verification status display
+  const getVerificationDisplay = () => {
+    if (verifying) {
+      return { text: 'Verifying...', color: 'text-blue-600', icon: '🔄' };
+    }
+    if (verified) {
+      return { text: '✅ Verified', color: 'text-green-600', icon: '✅' };
+    }
+    if (artifact.hash && artifact.hash !== 'N/A') {
+      return { text: '⚠️ Not Verified', color: 'text-yellow-600', icon: '⚠️' };
+    }
+    return { text: 'No Hash', color: 'text-gray-400', icon: '⚪' };
+  };
+
+  const verifyDisplay = getVerificationDisplay();
+
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
       {/* Header */}
@@ -504,12 +544,11 @@ const EvidenceCard = ({ artifact }) => {
           <IAMPolicySummary content={artifact.content} />
         )}
 
-        {artifact.artifact_type === 'IAMRole' && (  // ✅ ADD THIS
+        {artifact.artifact_type === 'IAMRole' && (
           <IAMRoleSummary content={artifact.content} />
         )}
 
-
-        {/* Integrity Section */}
+        {/* Integrity Section - Enhanced */}
         <div className="mt-4 pt-4 border-t border-gray-200">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center space-x-2 min-w-0">
@@ -520,38 +559,65 @@ const EvidenceCard = ({ artifact }) => {
             </div>
             
             <div className="flex items-center space-x-3 flex-wrap gap-2">
-              {/* Integrity Status */}
-              {verified ? (
-                <span className="text-green-600 text-sm flex items-center">
-                  ✅ Verified
-                </span>
-              ) : (
-                <span className="text-yellow-600 text-sm flex items-center">
-                  ⚠️ Not Verified
-                </span>
-              )}
+              {/* ✅ Enhanced Verification Status */}
+              <div className={`flex items-center space-x-1 text-sm ${verifyDisplay.color}`}>
+                <span>{verifyDisplay.icon}</span>
+                <span>{verifyDisplay.text}</span>
+                {verifying && (
+                  <span className="ml-1 text-xs text-gray-400">(calculating...)</span>
+                )}
+              </div>
               
               {/* Verify Button */}
               <button
-                onClick={handleVerify}
-                disabled={verifying}
-                className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={() => handleVerify(false)}
+                disabled={verifying || !artifact.hash || artifact.hash === 'N/A'}
+                className={`px-3 py-1 text-sm rounded disabled:opacity-50 disabled:cursor-not-allowed ${
+                  verified 
+                    ? 'bg-green-100 text-green-700 hover:bg-green-200' 
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
               >
-                {verifying ? 'Verifying...' : 'Verify'}
+                {verifying ? 'Verifying...' : verified ? '✅ Re-verify' : 'Verify'}
               </button>
             </div>
           </div>
 
-          {/* Verification Result */}
+          {/* ✅ Auto-verify badge */}
+          {autoVerified && !verifying && (
+            <div className="mt-1 text-xs text-green-600 flex items-center">
+              <span className="mr-1">✅</span>
+              Auto-verified on load
+            </div>
+          )}
+
+          {/* Verification Result - Enhanced */}
           {verificationResult && (
-            <div className={`mt-2 p-2 rounded text-sm ${
+            <div className={`mt-2 p-2 rounded text-sm border ${
               verificationResult.verified 
-                ? 'bg-green-50 text-green-700 border border-green-200' 
-                : 'bg-red-50 text-red-700 border border-red-200'
+                ? 'bg-green-50 text-green-700 border-green-200' 
+                : 'bg-red-50 text-red-700 border-red-200'
             }`}>
-              {verificationResult.verified 
-                ? '✅ Evidence integrity verified successfully' 
-                : '❌ Integrity verification failed - Evidence may be tampered!'}
+              <div className="flex items-start">
+                <span className="mr-2">{verificationResult.verified ? '✅' : '❌'}</span>
+                <div>
+                  <div className="font-medium">
+                    {verificationResult.verified 
+                      ? 'Evidence integrity verified successfully' 
+                      : 'Integrity verification failed - Evidence may be tampered!'}
+                  </div>
+                  {verificationResult.message && (
+                    <div className="text-xs mt-1 opacity-75">
+                      {verificationResult.message}
+                    </div>
+                  )}
+                  {verificationResult.verified && verificationResult.verified_at && (
+                    <div className="text-xs mt-1 opacity-75">
+                      Verified at: {new Date(verificationResult.verified_at).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 

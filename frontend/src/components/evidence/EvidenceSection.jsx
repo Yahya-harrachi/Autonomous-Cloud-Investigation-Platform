@@ -1,12 +1,14 @@
 // frontend/src/components/evidence/EvidenceSection.jsx
 import React, { useState, useEffect } from 'react';
 import EvidenceCard from './EvidenceCard';
-import { getIncidentEvidence } from '../../services/evidence';
+import { getIncidentEvidence, batchVerifyEvidence } from '../../services/evidence';
 
 const EvidenceSection = ({ incidentId }) => {
   const [evidence, setEvidence] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [verifyingAll, setVerifyingAll] = useState(false);
+  const [autoVerify, setAutoVerify] = useState(true);
 
   useEffect(() => {
     if (incidentId) {
@@ -15,7 +17,7 @@ const EvidenceSection = ({ incidentId }) => {
   }, [incidentId]);
 
   const loadEvidence = async () => {
-    setLoading(true);  // ✅ Set loading BEFORE API call
+    setLoading(true);
     try {
       const data = await getIncidentEvidence(incidentId);
       console.log('📊 Evidence API Response:', data);
@@ -24,7 +26,23 @@ const EvidenceSection = ({ incidentId }) => {
       setError(err.message);
       console.error('Error loading evidence:', err);
     } finally {
-      setLoading(false);  // ✅ Set loading AFTER API call
+      setLoading(false);
+    }
+  };
+
+  // ✅ Batch verify all evidence
+  const handleBatchVerify = async () => {
+    setVerifyingAll(true);
+    try {
+      const results = await batchVerifyEvidence(incidentId);
+      console.log('📊 Batch verification results:', results);
+      // Refresh evidence to show updated verification status
+      await loadEvidence();
+    } catch (err) {
+      console.error('Batch verification failed:', err);
+      setError('Failed to verify all evidence: ' + err.message);
+    } finally {
+      setVerifyingAll(false);
     }
   };
 
@@ -33,6 +51,11 @@ const EvidenceSection = ({ incidentId }) => {
   const completed = evidence.filter(e => e.collection_status === 'COMPLETED').length;
   const failed = evidence.filter(e => e.collection_status === 'FAILED').length;
   const pending = evidence.filter(e => e.collection_status === 'PENDING').length;
+  
+  // ✅ Get verification statistics
+  const verifiedCount = evidence.filter(e => e.integrity_verified === true).length;
+  const unverifiedCount = evidence.filter(e => e.integrity_verified === false && e.hash && e.hash !== 'N/A').length;
+  const noHashCount = evidence.filter(e => !e.hash || e.hash === 'N/A').length;
 
   // Group evidence by type
   const groupedEvidence = evidence.reduce((acc, item) => {
@@ -42,7 +65,6 @@ const EvidenceSection = ({ incidentId }) => {
     return acc;
   }, {});
 
-  // ✅ Get icon for each type
   const getTypeIcon = (type) => {
     const icons = {
       'CloudTrailEvent': '📊',
@@ -55,7 +77,11 @@ const EvidenceSection = ({ incidentId }) => {
     return icons[type] || '📦';
   };
 
-  // ✅ LOADING STATE - Show spinner
+  // Toggle auto-verify
+  const toggleAutoVerify = () => {
+    setAutoVerify(!autoVerify);
+  };
+
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -68,7 +94,6 @@ const EvidenceSection = ({ incidentId }) => {
     );
   }
 
-  // ✅ ERROR STATE
   if (error) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -79,7 +104,6 @@ const EvidenceSection = ({ incidentId }) => {
     );
   }
 
-  // ✅ EMPTY STATE - Only show if not loading and no evidence
   if (evidence.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -94,7 +118,6 @@ const EvidenceSection = ({ incidentId }) => {
     );
   }
 
-  // ✅ EVIDENCE DISPLAY
   return (
     <div className="space-y-4">
       {/* Stats Bar */}
@@ -109,27 +132,56 @@ const EvidenceSection = ({ incidentId }) => {
               <span className="text-sm text-green-600">✅ Completed</span>
               <div className="text-xl font-bold text-green-600">{completed}</div>
             </div>
+            <div>
+              <span className="text-sm text-blue-600">🔐 Verified</span>
+              <div className="text-xl font-bold text-blue-600">{verifiedCount}</div>
+            </div>
+            {unverifiedCount > 0 && (
+              <div>
+                <span className="text-sm text-yellow-600">⚠️ Unverified</span>
+                <div className="text-xl font-bold text-yellow-600">{unverifiedCount}</div>
+              </div>
+            )}
             {failed > 0 && (
               <div>
                 <span className="text-sm text-red-600">❌ Failed</span>
                 <div className="text-xl font-bold text-red-600">{failed}</div>
               </div>
             )}
-            {pending > 0 && (
-              <div>
-                <span className="text-sm text-yellow-600">⏳ Pending</span>
-                <div className="text-xl font-bold text-yellow-600">{pending}</div>
-              </div>
-            )}
           </div>
           
-          <button
-            onClick={loadEvidence}
-            disabled={loading}
-            className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Loading...' : '🔄 Refresh'}
-          </button>
+          <div className="flex items-center space-x-2">
+            {/* Auto-verify toggle */}
+            <button
+              onClick={toggleAutoVerify}
+              className={`px-2 py-1 text-xs rounded ${
+                autoVerify 
+                  ? 'bg-green-100 text-green-700' 
+                  : 'bg-gray-100 text-gray-500'
+              }`}
+            >
+              {autoVerify ? '🔐 Auto-Verify On' : '🔓 Auto-Verify Off'}
+            </button>
+            
+            {/* Batch verify button */}
+            {unverifiedCount > 0 && (
+              <button
+                onClick={handleBatchVerify}
+                disabled={verifyingAll}
+                className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {verifyingAll ? 'Verifying...' : `🔐 Verify All (${unverifiedCount})`}
+              </button>
+            )}
+            
+            <button
+              onClick={loadEvidence}
+              disabled={loading}
+              className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50"
+            >
+              {loading ? 'Loading...' : '🔄 Refresh'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -143,7 +195,11 @@ const EvidenceSection = ({ incidentId }) => {
             </h4>
           </div>
           {artifacts.map((artifact) => (
-            <EvidenceCard key={artifact.id} artifact={artifact} />
+            <EvidenceCard 
+              key={artifact.id} 
+              artifact={artifact} 
+              autoVerify={autoVerify}
+            />
           ))}
         </div>
       ))}
