@@ -25,7 +25,7 @@ class IncidentCreator:
     Creates incidents from normalized events based on severity.
     Only processes events that are severe enough.
     """
-    
+
     def __init__(self):
         self.severity_thresholds = {
             "CRITICAL": True,        # Always create incident
@@ -34,7 +34,7 @@ class IncidentCreator:
             "LOW": False,            # Never create incident
             "INFO": False,           # Never create incident
         }
-        
+
         # Initialize Telegram notifier if configured
         self.telegram_notifier = None
         if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
@@ -49,70 +49,80 @@ class IncidentCreator:
          # ✅ NEW: Initialize Evidence Orchestrator
         self.evidence_orchestrator = EvidenceOrchestrator()
         logger.info("✅ Evidence Orchestrator initialized")
-    
+
+        # ✅ NEW: hold strong references to fire-and-forget evidence-collection
+        # tasks. asyncio.create_task() only keeps a WEAK reference internally —
+        # if nothing else references the Task, the event loop can garbage-collect
+        # it mid-execution, silently, with no exception raised. That's why
+        # IAMPolicy/IAMRole (the two slowest collectors — several chained AWS
+        # API calls each) were disappearing while the faster CloudTrailEvent/
+        # IAMUser collectors survived. See:
+        # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+        self._background_tasks: set = set()
+
     def process_event(self, normalized: NormalizedEvent) -> Optional[Incident]:
         """
         Process a normalized event and create an incident if needed.
         """
         print(f"🔍 IncidentCreator.process_event called for: {normalized.event_name}")
-        
+
         # 1. Check if incident should be created
         should_create, reason = self._should_create_incident(normalized)
         print(f"   Should create: {should_create}, Reason: {reason}")
-        
+
         if not should_create:
             print(f"   ❌ Not creating incident")
             return None
-        
+
         # 2. Check for duplicates
         if self._is_duplicate(normalized):
             print(f"   ❌ Duplicate incident, skipping")
             return None
-        
+
         # 3. Create incident
         incident = self._create_incident(normalized)
         print(f"   ✅ Incident object created: {incident.title}")
-        
+
         # 4. Save to database (this will also send Telegram notification)
         self._save_incident(incident)
 
-        
+
         # 5. ✅ NEW: Collect evidence asynchronously
         if incident:
             self._trigger_evidence_collection(incident)
-        
+
         # ✅ FIX: Use priority.value instead of severity
         print(f"✅ Incident created: {incident.title} ({incident.priority.value})")
         return incident
-    
+
     def _should_create_incident(self, event: NormalizedEvent) -> Tuple[bool, str]:
         """
         Determine if an incident should be created.
-        
+
         Returns:
             (should_create, reason)
         """
         severity = event.severity
         score = event.severity_score
-        
+
         # CRITICAL and HIGH always create incidents
         if severity in ["CRITICAL", "HIGH"]:
             return True, f"Severity is {severity}"
-        
+
         # MEDIUM creates incident if score is above threshold
         if severity == "MEDIUM" and score >= self.severity_thresholds["MEDIUM"]:
             return True, f"MEDIUM severity with score {score} >= threshold"
-        
+
         # LOW and INFO never create incidents
         return False, f"Severity {severity} or score {score} below threshold"
-    
+
     def _is_duplicate(self, event: NormalizedEvent) -> bool:
         """
         Check if a similar incident was created recently.
-        
+
         Args:
             event: Normalized event
-            
+
         Returns:
             True if duplicate exists
         """
@@ -120,32 +130,32 @@ class IncidentCreator:
         try:
             # Check for same event_name in last 5 minutes
             cutoff = datetime.utcnow() - timedelta(minutes=5)
-            
+
             count = db.query(IncidentModel).filter(
                 IncidentModel.title.ilike(f"%{event.event_name}%"),
                 IncidentModel.created_at >= cutoff
             ).count()
-            
+
             return count > 0
         except Exception as e:
             logger.warning(f"Duplicate check failed: {e}")
             return False
         finally:
             db.close()
-    
+
     def _create_incident(self, event: NormalizedEvent) -> Incident:
         """
         Create an incident from a normalized event.
         """
         priority = self._map_severity_to_priority(event.severity)
-        
+
         title = self._generate_title(event)
         description = self._generate_description(event)
-        
+
         # Generate a valid UUID for database storage
         incident_uuid = uuid.uuid4()
         incident_id = f"inc-{incident_uuid.hex[:12]}"  # Display ID
-        
+
         # ✅ Add severity_score to metadata
         metadata = {
             "severity": event.severity,
@@ -158,7 +168,7 @@ class IncidentCreator:
             "source_ip": event.actor_ip,
             "timestamp": event.timestamp.isoformat(),
         }
-        
+
         return Incident(
             id=incident_id,
             title=title,
@@ -178,11 +188,11 @@ class IncidentCreator:
             evidence_count=0,
             evidence_ids=[],
         )
-    
+
     def _save_incident(self, incident: Incident) -> None:
         """
         Save incident to database.
-        
+
         Args:
             incident: Incident to save
         """
@@ -191,11 +201,11 @@ class IncidentCreator:
             # Generate a valid UUID from the incident ID
             # incident.id format: inc-abc123def456
             uuid_str = incident.id.replace('inc-', '')
-            
+
             # If the UUID is short (12 chars), pad it to 32 chars
             if len(uuid_str) < 32:
                 uuid_str = uuid_str.ljust(32, '0')
-            
+
             db_incident = IncidentModel(
                 id=uuid.UUID(uuid_str),
                 title=incident.title,
@@ -211,7 +221,7 @@ class IncidentCreator:
                 resolved_at=incident.resolved_at,
                 evidence_count=incident.evidence_count,
             )
-            
+
             db.add(db_incident)
             db.commit()
             db.refresh(db_incident)
@@ -219,14 +229,12 @@ class IncidentCreator:
             incident._db_id = db_incident.id  # Store the real UUID
 
             logger.info(f"✅ Incident saved to database: {incident.id}")
-            
+
             # ✅ Send Telegram notification after successful save
             if self.telegram_notifier:
                 try:
-                    # Check if we're in an async context
                     try:
                         loop = asyncio.get_running_loop()
-                        # If we're in async context, create a task
                         asyncio.create_task(
                             self.telegram_notifier.send_incident_alert(incident)
                         )
@@ -245,7 +253,7 @@ class IncidentCreator:
                             loop.close()
                 except Exception as e:
                     logger.error(f"❌ Failed to send Telegram notification: {e}")
-            
+
         except Exception as e:
             logger.error(f"Failed to save incident: {e}")
             db.rollback()
@@ -257,7 +265,7 @@ class IncidentCreator:
         """
         Trigger evidence collection for an incident.
         Only for high-severity incidents.
-        
+
         Args:
             incident: The incident to collect evidence for
         """
@@ -265,16 +273,25 @@ class IncidentCreator:
         if incident.priority not in [IncidentPriority.CRITICAL, IncidentPriority.HIGH]:
             logger.info(f"ℹ️ Skipping evidence collection for {incident.priority.value} incident")
             return
-        
+
         logger.info(f"🔍 Triggering evidence collection for incident {incident.id}")
-        
+
         try:
             # Check if we're in an async context
             try:
                 loop = asyncio.get_running_loop()
-                # If in async context, create a task
-                asyncio.create_task(
+                # ✅ FIX: keep a strong reference to the task so the event loop
+                # can't garbage-collect it before it finishes. Previously this
+                # was `asyncio.create_task(...)` with the return value discarded.
+                task = asyncio.create_task(
                     self.evidence_orchestrator.orchestrate(incident)
+                )
+                self._background_tasks.add(task)
+                # Remove from the set once done, so it doesn't grow forever.
+                task.add_done_callback(self._background_tasks.discard)
+                # Surface success/failure instead of it vanishing silently.
+                task.add_done_callback(
+                    lambda t, inc_id=incident.id: self._log_evidence_task_result(t, inc_id)
                 )
                 logger.info(f"📋 Evidence collection scheduled for incident {incident.id}")
             except RuntimeError:
@@ -292,13 +309,32 @@ class IncidentCreator:
         except Exception as e:
             logger.error(f"❌ Failed to trigger evidence collection: {e}")
 
+    def _log_evidence_task_result(self, task: "asyncio.Task", incident_id: str) -> None:
+        """
+        ✅ NEW: done-callback for the background evidence-collection task.
+        Without this, a failed or previously-GC'd task fails completely
+        silently — nothing in the logs tells you evidence collection
+        didn't finish.
+        """
+        try:
+            result = task.result()
+            logger.info(
+                f"📋 Evidence collection finished for {incident_id}: "
+                f"{result.get('artifacts_collected', 0)} artifacts "
+                f"(failed: {result.get('failed_collectors', [])})"
+            )
+        except asyncio.CancelledError:
+            logger.warning(f"⚠️ Evidence collection task for {incident_id} was cancelled")
+        except Exception as e:
+            logger.error(f"❌ Evidence collection task for {incident_id} failed: {e}")
+
     def _map_severity_to_priority(self, severity: str) -> IncidentPriority:
         """
         Map severity to incident priority.
-        
+
         Args:
             severity: Severity string
-            
+
         Returns:
             IncidentPriority enum
         """
@@ -310,7 +346,7 @@ class IncidentCreator:
             "INFO": IncidentPriority.LOW,
         }
         return mapping.get(severity, IncidentPriority.MEDIUM)
-    
+
     def _generate_title(self, event: NormalizedEvent) -> str:
         """
         Generate incident title.
@@ -318,62 +354,62 @@ class IncidentCreator:
         severity = event.severity
         event_name = event.event_name
         actor = event.actor
-        
+
         if actor and actor != "unknown":
             return f"[{severity}] {event_name} by {actor}"
         else:
             return f"[{severity}] {event_name}"
-    
+
     def _generate_description(self, event: NormalizedEvent) -> str:
         """
         Generate incident description.
-        
+
         Args:
             event: Normalized event
-            
+
         Returns:
             Description string
         """
         parts = []
-        
+
         # Source
         parts.append(f"Incident detected from {event.provider.upper()}")
-        
+
         # Event
         parts.append(f"Event: {event.event_name}")
-        
+
         # Actor
         if event.actor and event.actor != "unknown":
             parts.append(f"Actor: {event.actor} ({event.actor_type})")
-        
+
         # Severity
         parts.append(f"Severity: {event.severity} (Score: {event.severity_score}/100)")
-        
+
         # Resource
         if event.resource and event.resource != "unknown":
             parts.append(f"Resource: {event.resource}")
-        
+
         # Region
         if event.region:
             parts.append(f"Region: {event.region}")
-        
+
         # Source IP
         if event.actor_ip and event.actor_ip != "unknown":
             parts.append(f"Source IP: {event.actor_ip}")
-        
+
         # Severity reason
         if event.severity_reason:
             parts.append(f"Reason: {event.severity_reason}")
-        
+
         return " | ".join(parts)
-    
+
     def get_incident_by_id(self, incident_id: str) -> Optional[Dict[str, Any]]:
         """
         Get incident by ID.
-        
+
         Args:
             incident_id: Incident ID
-            
+
         Returns:
             Incident data or None
         """
@@ -383,29 +419,29 @@ class IncidentCreator:
             uuid_str = incident_id.replace('inc-', '')
             if len(uuid_str) < 32:
                 uuid_str = uuid_str.ljust(32, '0')
-            
+
             incident = db.query(IncidentModel).filter(
                 IncidentModel.id == uuid.UUID(uuid_str)
             ).first()
-            
+
             if not incident:
                 return None
-            
+
             return incident.to_dict()
         except Exception as e:
             logger.error(f"Error getting incident: {e}")
             return None
         finally:
             db.close()
-    
+
     def get_incidents(self, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Get all incidents.
-        
+
         Args:
             skip: Number to skip
             limit: Max results
-            
+
         Returns:
             List of incident dictionaries
         """
@@ -416,18 +452,18 @@ class IncidentCreator:
                 .offset(skip)\
                 .limit(limit)\
                 .all()
-            
+
             return [i.to_dict() for i in incidents]
         except Exception as e:
             logger.error(f"Error getting incidents: {e}")
             return []
         finally:
             db.close()
-    
+
     def get_incident_stats(self) -> Dict[str, Any]:
         """
         Get incident statistics.
-        
+
         Returns:
             Stats dictionary
         """
@@ -443,7 +479,7 @@ class IncidentCreator:
             resolved = db.query(IncidentModel).filter(
                 IncidentModel.status.in_([IncidentStatus.COMPLETED, IncidentStatus.RESOLVED])
             ).count()
-            
+
             return {
                 "total": total,
                 "pending": pending,

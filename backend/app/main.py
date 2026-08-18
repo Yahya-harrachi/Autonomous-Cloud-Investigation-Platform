@@ -10,7 +10,7 @@ from .api.routes import incidents
 from .api.routes import rules  
 from .api.routes.debug import cloudtrail, cloudtrail_normalized
 from .api.routes import sqs
-from .api.routes import websocket  # Add this
+from .api.routes import websocket 
 from .core.database import engine, Base
 from .models.incident import IncidentModel
 from .domain.models.risk_rule import RuleModel
