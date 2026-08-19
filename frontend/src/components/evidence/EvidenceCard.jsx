@@ -9,6 +9,14 @@ const CloudTrailSummary = ({ content }) => {
   const summary = content?.summary || {};
   const timeline = content?.timeline || [];
   const patterns = content?.patterns || [];
+  const uniqueIPs = timeline.reduce((acc, event) => {
+    const ip = event.source_ip;
+    if (ip && ip !== 'unknown' && ip !== 'N/A') {
+      if (!acc[ip]) acc[ip] = [];
+      acc[ip].push(event);
+    }
+    return acc;
+  }, {});
   
   return (
     <div className="space-y-3">
@@ -59,6 +67,48 @@ const CloudTrailSummary = ({ content }) => {
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Threat Intelligence */}
+      {Object.keys(uniqueIPs).length > 0 && (
+        <div className="border border-gray-200 rounded p-2">
+          <div className="text-xs font-medium text-gray-700">🌐 Threat Intelligence</div>
+          {Object.entries(uniqueIPs).map(([ip, events]) => {
+            const threatData = events[0]?.threat_intel;
+            if (!threatData) {
+              return (
+                <div key={ip} className="mt-1 text-xs flex justify-between">
+                  <span className="text-gray-500">{ip}</span>
+                  <span className="text-green-600">✅ Clean</span>
+                </div>
+              );
+            }
+            
+            const score = threatData.abuse_score;
+            const emoji = score >= 75 ? '🔴' : score >= 50 ? '🟠' : score >= 25 ? '🟡' : '🔵';
+            const level = score >= 75 ? 'Malicious' : score >= 50 ? 'Suspicious' : score >= 25 ? 'Low Risk' : 'Clean';
+            
+            return (
+              <div key={ip} className="mt-1 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="font-mono">{ip}</span>
+                  <span className={`px-2 py-0.5 rounded ${
+                    score >= 50 ? 'bg-red-100 text-red-700' :
+                    score >= 25 ? 'bg-yellow-100 text-yellow-700' :
+                    'bg-green-100 text-green-700'
+                  }`}>
+                    {emoji} {level} ({score}/100)
+                  </span>
+                </div>
+                {threatData.total_reports > 0 && (
+                  <div className="text-gray-400">
+                    {threatData.total_reports} reports • {threatData.country_name || 'Unknown'} • {threatData.isp || 'Unknown ISP'}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
