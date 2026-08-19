@@ -7,6 +7,8 @@ from app.evidence.collectors.cloudtrail_collector import CloudTrailCollector
 from app.evidence.collectors.iam_collector import IAMCollector
 from app.evidence.collectors.iam_policy_collector import IAMPolicyCollector
 from app.evidence.collectors.iam_role_collector import IAMRoleCollector
+from app.evidence.collectors.s3_collector import S3Collector
+from app.evidence.collectors.ec2_collector import EC2Collector
 
 __all__ = [
     'BaseCollector',
@@ -15,4 +17,6 @@ __all__ = [
     'IAMCollector',
     'IAMPolicyCollector',
     'IAMRoleCollector',
+    'S3Collector',
+    'EC2Collector'
 ]

@@ -42,8 +42,8 @@ INITIAL_PLAYBOOKS = [
         ],
         "evidence_required": [
             "CloudTrailEvent",
-            "S3Bucket",
-            "S3Policy"
+            "IAMUser",
+            "S3Bucket"
         ],
         "enabled": True,
         "version": "1.0.0"
@@ -58,8 +58,8 @@ INITIAL_PLAYBOOKS = [
         ],
         "evidence_required": [
             "CloudTrailEvent",
-            "SecurityGroup",
-            "EC2Instance"
+            "IAMUser",
+            "SecurityGroup"
         ],
         "enabled": True,
         "version": "1.0.0"

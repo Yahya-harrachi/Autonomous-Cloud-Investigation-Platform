@@ -14,6 +14,8 @@ from app.evidence.collectors.cloudtrail_collector import CloudTrailCollector
 from app.evidence.collectors.iam_collector import IAMCollector
 from app.evidence.collectors.iam_policy_collector import IAMPolicyCollector
 from app.evidence.collectors.iam_role_collector import IAMRoleCollector
+from app.evidence.collectors.s3_collector import S3Collector
+from app.evidence.collectors.ec2_collector import EC2Collector
 from app.core.database import SessionLocal
 from app.models.incident import IncidentModel
 from app.evidence.collectors.base import parse_incident_id
@@ -30,6 +32,8 @@ class EvidenceOrchestrator:
             "IAMUser": IAMCollector(),
             "IAMPolicy": IAMPolicyCollector(),
             "IAMRole": IAMRoleCollector(),
+            "S3Bucket": S3Collector(),
+            "SecurityGroup": EC2Collector(),
         }
         self.logger = logging.getLogger(__name__)
         self.logger.info("=" * 60)
@@ -72,7 +76,6 @@ class EvidenceOrchestrator:
                 tasks.append(self._collect_with_logging(evidence_type, incident))
             else:
                 self.logger.warning(f"⚠️ No collector registered for {evidence_type}")
-                # Create empty artifact for missing collector
                 empty = self._create_empty_artifact(incident.id, evidence_type, f"No collector registered")
                 if empty:
                     self._save_artifact(empty)
@@ -87,7 +90,6 @@ class EvidenceOrchestrator:
         for result in results:
             if isinstance(result, Exception):
                 self.logger.error(f"❌ Collector failed: {result}")
-                # Create empty artifact on exception
                 empty = self._create_empty_artifact(incident.id, "Unknown", f"Collection error: {str(result)}")
                 if empty:
                     self._save_artifact(empty)
@@ -101,14 +103,12 @@ class EvidenceOrchestrator:
                     self.logger.info(f"   ✅ {result['type']}: SAVED")
                 else:
                     self.logger.error(f"   ❌ {result['type']}: FAILED TO SAVE")
-                    # Try to save empty artifact as fallback
                     empty = self._create_empty_artifact(incident.id, result['type'], "Failed to save artifact")
                     if empty:
                         self._save_artifact(empty)
                         artifacts.append(empty)
             elif result and result.get('error'):
                 self.logger.warning(f"   ⚠️ {result.get('type')}: {result.get('message', 'Unknown error')}")
-                # ✅ CRITICAL: Always create empty artifact when collector returns error
                 empty = self._create_empty_artifact(
                     incident.id,
                     result.get('type', 'Unknown'),
@@ -141,28 +141,38 @@ class EvidenceOrchestrator:
 
     def _determine_evidence_types(self, event_name: str, provider: str, actor: str) -> List[str]:
         """Determine which evidence types to collect based on event."""
-        # Always collect CloudTrail
+        # ✅ Always collect CloudTrail
         types = ["CloudTrailEvent"]
-
-        # Check if IAM-related
-        is_iam = any([
-            'User' in event_name,
-            'Policy' in event_name,
-            'Role' in event_name,
-            'Group' in event_name,
-            'iam' in provider.lower(),
-            'IAM' in event_name
-        ])
-
-        if is_iam:
-            types.extend(["IAMUser", "IAMPolicy", "IAMRole"])
-            self.logger.info(f"🔍 IAM-related event detected: {event_name}")
-            self.logger.info(f"   Collecting: {types}")
-
-        # Check if S3-related (for future)
-        if 'Bucket' in event_name or 'S3' in event_name:
-            # types.append("S3Bucket")  # Future
-            pass
+        
+        # ✅ ALWAYS collect IAM evidence (since most incidents are IAM-related)
+        types.extend(["IAMUser", "IAMPolicy", "IAMRole"])
+        
+        # ✅ ALWAYS collect S3 and Security Group evidence
+        # They will show "No S3 bucket found" / "No security group found" if not applicable
+        types.append("S3Bucket")
+        types.append("SecurityGroup")
+        
+        self.logger.info(f"📋 Always collecting: {types}")
+        self.logger.info(f"   (S3Bucket and SecurityGroup will show empty if not applicable)")
+        
+        # Check if it's specifically S3-related (for logging)
+        s3_events = [
+            "PutBucketPolicy", "PutBucketAcl", "PutBucketPublicAccessBlock",
+            "DeleteBucketPublicAccessBlock", "PutBucketWebsite", "CreateBucket",
+            "DeleteBucket", "PutBucketVersioning", "PutBucketEncryption",
+            "PutBucketLogging", "PutBucketTagging"
+        ]
+        if event_name in s3_events or 'Bucket' in event_name:
+            self.logger.info(f"🔍 S3-specific event detected: {event_name}")
+        
+        # Check if it's specifically Security Group related (for logging)
+        security_group_events = [
+            "AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress",
+            "RevokeSecurityGroupIngress", "RevokeSecurityGroupEgress",
+            "CreateSecurityGroup", "DeleteSecurityGroup", "ModifySecurityGroupRules"
+        ]
+        if event_name in security_group_events or 'SecurityGroup' in event_name:
+            self.logger.info(f"🔍 Security Group-specific event detected: {event_name}")
 
         return types
 
@@ -177,7 +187,6 @@ class EvidenceOrchestrator:
                 self.logger.info(f"   ✅ Completed: {evidence_type}")
                 return {'artifact': artifact, 'type': evidence_type}
             else:
-                # ✅ Collector returned None - create empty artifact
                 self.logger.warning(f"   ⚠️ Collector returned None for {evidence_type}")
                 empty = self._create_empty_artifact(
                     incident.id,
@@ -187,7 +196,6 @@ class EvidenceOrchestrator:
                 return {'artifact': empty, 'type': evidence_type}
         except Exception as e:
             self.logger.error(f"   ❌ Failed: {evidence_type} - {e}")
-            # ✅ Create empty artifact on exception
             empty = self._create_empty_artifact(
                 incident.id,
                 evidence_type,
@@ -206,7 +214,9 @@ class EvidenceOrchestrator:
                     "total_events": 0,
                     "total_policies": 0,
                     "total_roles": 0,
-                    "total_users": 0
+                    "total_users": 0,
+                    "total_buckets": 0,
+                    "total_security_groups": 0
                 },
                 "note": "No evidence collected for this artifact type"
             }

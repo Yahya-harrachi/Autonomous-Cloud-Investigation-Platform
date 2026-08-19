@@ -400,6 +400,190 @@ const IAMRoleSummary = ({ content }) => {
   );
 };
 
+
+
+// ============================================================
+// S3 BUCKET SUMMARY COMPONENT
+// ============================================================
+const S3Summary = ({ content }) => {
+  const bucket = content?.bucket || {};
+  const summary = content?.summary || {};
+  const findings = content?.security_findings || [];
+  
+  if (!bucket || !bucket.bucket_name) {
+    return (
+      <div className="text-sm text-gray-500">
+        No S3 bucket found in this incident
+      </div>
+    );
+  }
+
+  const criticalFindings = findings.filter(f => f.severity === 'critical');
+  const highFindings = findings.filter(f => f.severity === 'high');
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="bg-blue-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Bucket</div>
+          <div className="text-sm font-semibold">{bucket.bucket_name}</div>
+          <div className="text-xs text-gray-400">{bucket.region || 'N/A'}</div>
+        </div>
+        <div className={`p-2 rounded ${bucket.is_public ? 'bg-red-50' : 'bg-green-50'}`}>
+          <div className="text-xs text-gray-500">Public Access</div>
+          <div className="text-sm font-semibold">
+            {bucket.is_public ? '🔴 Public' : '🟢 Private'}
+          </div>
+          <div className="text-xs text-gray-400">
+            Created: {bucket.creation_date ? new Date(bucket.creation_date).toLocaleDateString() : 'N/A'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-purple-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Security Findings</div>
+          <div className="text-lg font-semibold text-red-600">{findings.length}</div>
+        </div>
+        <div className="bg-red-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Critical</div>
+          <div className="text-lg font-semibold text-red-700">{criticalFindings.length}</div>
+        </div>
+        <div className="bg-orange-50 p-2 rounded">
+          <div className="text-xs text-gray-500">High</div>
+          <div className="text-lg font-semibold text-orange-700">{highFindings.length}</div>
+        </div>
+      </div>
+
+      {/* Security Findings */}
+      {findings.length > 0 && (
+        <div className="space-y-1">
+          {findings.map((finding, idx) => (
+            <div 
+              key={idx} 
+              className={`text-xs p-1 rounded ${
+                finding.severity === 'critical' ? 'bg-red-50 text-red-700' :
+                finding.severity === 'high' ? 'bg-orange-50 text-orange-700' :
+                finding.severity === 'medium' ? 'bg-yellow-50 text-yellow-700' :
+                'bg-blue-50 text-blue-700'
+              }`}
+            >
+              {finding.severity === 'critical' ? '🔴' : 
+               finding.severity === 'high' ? '🟠' : 
+               finding.severity === 'medium' ? '🟡' : '🔵'} 
+              {finding.description}
+              {finding.recommendation && (
+                <div className="text-gray-600 text-xs">💡 {finding.recommendation}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================
+// SECURITY GROUP SUMMARY COMPONENT
+// ============================================================
+const SecurityGroupSummary = ({ content }) => {
+  const sg = content?.security_group || {};
+  const summary = content?.summary || {};
+  const findings = content?.security_findings || [];
+  
+  if (!sg || !sg.group_id) {
+    return (
+      <div className="text-sm text-gray-500">
+        No security group found in this incident
+      </div>
+    );
+  }
+
+  const inboundRules = sg.inbound_rules || [];
+  const outboundRules = sg.outbound_rules || [];
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="bg-blue-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Security Group</div>
+          <div className="text-sm font-semibold">{sg.group_name || 'N/A'}</div>
+          <div className="text-xs text-gray-400">{sg.group_id}</div>
+        </div>
+        <div className="bg-purple-50 p-2 rounded">
+          <div className="text-xs text-gray-500">VPC</div>
+          <div className="text-sm font-semibold">{sg.vpc_id || 'N/A'}</div>
+          <div className="text-xs text-gray-400">
+            {sg.instances?.length || 0} instances using this SG
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-green-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Inbound Rules</div>
+          <div className="text-lg font-semibold">{inboundRules.length}</div>
+        </div>
+        <div className="bg-blue-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Outbound Rules</div>
+          <div className="text-lg font-semibold">{outboundRules.length}</div>
+        </div>
+        <div className="bg-red-50 p-2 rounded">
+          <div className="text-xs text-gray-500">Security Findings</div>
+          <div className="text-lg font-semibold text-red-600">{findings.length}</div>
+        </div>
+      </div>
+
+      {/* Inbound Rules Preview */}
+      {inboundRules.length > 0 && (
+        <div className="border border-gray-200 rounded p-2">
+          <div className="text-xs font-medium text-gray-700">📥 Inbound Rules</div>
+          {inboundRules.slice(0, 5).map((rule, idx) => (
+            <div key={idx} className="mt-1 text-xs flex justify-between">
+              <span>
+                {rule.protocol === '-1' ? 'All' : rule.protocol}
+                {rule.from_port && rule.to_port && ` (${rule.from_port}-${rule.to_port})`}
+              </span>
+              <span className="text-gray-500">
+                {rule.sources?.map(s => s.cidr || s.group_id || s.type).join(', ')}
+              </span>
+            </div>
+          ))}
+          {inboundRules.length > 5 && (
+            <div className="text-xs text-gray-400">+ {inboundRules.length - 5} more rules</div>
+          )}
+        </div>
+      )}
+
+      {/* Security Findings */}
+      {findings.length > 0 && (
+        <div className="space-y-1">
+          {findings.map((finding, idx) => (
+            <div 
+              key={idx} 
+              className={`text-xs p-1 rounded ${
+                finding.severity === 'critical' ? 'bg-red-50 text-red-700' :
+                finding.severity === 'high' ? 'bg-orange-50 text-orange-700' :
+                finding.severity === 'medium' ? 'bg-yellow-50 text-yellow-700' :
+                'bg-blue-50 text-blue-700'
+              }`}
+            >
+              {finding.severity === 'critical' ? '🔴' : 
+               finding.severity === 'high' ? '🟠' : 
+               finding.severity === 'medium' ? '🟡' : '🔵'} 
+              {finding.description}
+              {finding.recommendation && (
+                <div className="text-gray-600 text-xs">💡 {finding.recommendation}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 // ============================================================
 // MAIN EVIDENCE CARD COMPONENT - WITH AUTO-VERIFY
 // ============================================================
@@ -546,6 +730,14 @@ const EvidenceCard = ({ artifact, autoVerify = true }) => {
 
         {artifact.artifact_type === 'IAMRole' && (
           <IAMRoleSummary content={artifact.content} />
+        )}
+
+        {artifact.artifact_type === 'S3Bucket' && (
+          <S3Summary content={artifact.content} />
+        )}
+
+        {artifact.artifact_type === 'SecurityGroup' && (
+          <SecurityGroupSummary content={artifact.content} />
         )}
 
         {/* Integrity Section - Enhanced */}
