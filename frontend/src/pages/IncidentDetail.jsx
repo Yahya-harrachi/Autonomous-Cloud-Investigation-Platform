@@ -13,7 +13,8 @@ const IncidentDetail = () => {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('details');
   const [updating, setUpdating] = useState(false);
-
+  const [exporting, setExporting] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
   useEffect(() => {
     loadIncident();
   }, [id]);
@@ -52,6 +53,73 @@ const IncidentDetail = () => {
     setUpdating(false);
   }
 };
+
+
+const handleExport = async () => {
+    setExporting(true);
+    try {
+      const response = await api.get(`/incidents/${id}/export`, {
+        responseType: 'blob'
+      });
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      
+      // Extract filename from Content-Disposition header
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = `incident_${id}.json`;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+)"/);
+        if (match) filename = match[1];
+      }
+      
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+    } catch (err) {
+      console.error('Error exporting incident:', err);
+      alert('Failed to export incident: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportPDF = async () => {
+    setExportingPDF(true);
+    try {
+      const response = await api.get(`/incidents/${id}/export/pdf`, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
+      const link = document.createElement('a');
+      link.href = url;
+      
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = `incident_report_${id}.pdf`;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+)"/);
+        if (match) filename = match[1];
+      }
+      
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+    } catch (err) {
+      console.error('Error exporting PDF:', err);
+      alert('Failed to export PDF: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setExportingPDF(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -142,6 +210,41 @@ const IncidentDetail = () => {
                 ▼
               </span>
             </div>
+                <button
+            onClick={handleExportPDF}
+            disabled={exportingPDF}
+            className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-red-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+          >
+            {exportingPDF ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                <span>Generating PDF...</span>
+              </>
+            ) : (
+              <>
+                <span>📄</span>
+                <span>PDF</span>
+              </>
+            )}
+          </button>
+
+             <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+          >
+            {exporting ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                <span>Exporting...</span>
+              </>
+            ) : (
+              <>
+                <span>📤</span>
+                <span>JSON</span>
+              </>
+            )}
+          </button>
           </div>
         </div>
 

@@ -2,13 +2,16 @@
 """
 Incident API Routes - Complete and Corrected
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
 import hashlib
 import json
 from datetime import datetime
+
+from app.services.pdf_generator import PDFReportGenerator
 
 from ...core.database import get_db
 from ...domain.models.incident import IncidentStatus
@@ -206,6 +209,186 @@ def update_incident_status(
         "updated_at": incident.updated_at
     }
 
+
+# Export Incident
+@router.get("/{incident_id}/export")
+async def export_incident(
+    incident_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Export an incident with all its evidence as a complete package.
+    """
+    try:
+        # Parse incident ID
+        incident_uuid = parse_incident_id(incident_id)
+        
+        # Get incident
+        incident = db.query(IncidentModel).filter(
+            IncidentModel.id == incident_uuid
+        ).first()
+        
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        
+        # Get all evidence artifacts
+        artifacts = db.query(EvidenceArtifact).filter(
+            EvidenceArtifact.incident_id == incident_uuid
+        ).all()
+        
+        # Build export package
+        export_data = {
+            "export_metadata": {
+                "exported_at": datetime.utcnow().isoformat(),
+                "exporter": "ACIP Evidence Export",
+                "version": "1.0.0",
+                "incident_id": incident_id
+            },
+            "incident": {
+                "id": str(incident.id),
+                "title": incident.title,
+                "description": incident.description,
+                "status": incident.status.value if incident.status else None,
+                "priority": incident.priority.value if incident.priority else None,
+                "source_type": incident.source_type,
+                "source_event_id": incident.source_event_id,
+                "tags": incident.tags,
+                "extra_data": incident.extra_data,
+                "assigned_to": incident.assigned_to,
+                "assigned_team": incident.assigned_team,
+                "evidence_count": incident.evidence_count,
+                "created_at": incident.created_at.isoformat() if incident.created_at else None,
+                "updated_at": incident.updated_at.isoformat() if incident.updated_at else None,
+                "resolved_at": incident.resolved_at.isoformat() if incident.resolved_at else None
+            },
+            "evidence": []
+        }
+        
+        # Add evidence artifacts
+        for artifact in artifacts:
+            export_data["evidence"].append({
+                "id": str(artifact.id),
+                "artifact_type": artifact.artifact_type,
+                "source": artifact.source,
+                "provider": artifact.provider,
+                "region": artifact.region,
+                "collector": artifact.collector,
+                "collected_at": artifact.collected_at.isoformat() if artifact.collected_at else None,
+                "content": artifact.content,
+                "metadata": artifact.extra_data,
+                "hash": artifact.hash,
+                "hash_algorithm": artifact.hash_algorithm,
+                "collection_status": artifact.collection_status,
+                "integrity_verified": artifact.integrity_verified,
+                "verified_at": artifact.verified_at.isoformat() if artifact.verified_at else None,
+                "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+                "updated_at": artifact.updated_at.isoformat() if artifact.updated_at else None
+            })
+        
+        # Generate filename
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"incident_{incident_id}_{timestamp}.json"
+        
+        # Return as downloadable JSON
+        return JSONResponse(
+            content=export_data,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error exporting incident: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{incident_id}/export/pdf")
+async def export_incident_pdf(
+    incident_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Export an incident with all evidence as a PDF report.
+    """
+    try:
+        # Parse incident ID
+        incident_uuid = parse_incident_id(incident_id)
+        
+        # Get incident
+        incident = db.query(IncidentModel).filter(
+            IncidentModel.id == incident_uuid
+        ).first()
+        
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        
+        # Get all evidence artifacts
+        artifacts = db.query(EvidenceArtifact).filter(
+            EvidenceArtifact.incident_id == incident_uuid
+        ).all()
+        
+        # Prepare incident data
+        incident_data = {
+            "id": str(incident.id),
+            "title": incident.title,
+            "description": incident.description,
+            "status": incident.status.value if incident.status else "pending",
+            "priority": incident.priority.value if incident.priority else "medium",
+            "source_type": incident.source_type,
+            "source_event_id": incident.source_event_id,
+            "tags": incident.tags or [],
+            "assigned_to": incident.assigned_to,
+            "assigned_team": incident.assigned_team,
+            "evidence_count": incident.evidence_count,
+            "created_at": incident.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if incident.created_at else None,
+            "updated_at": incident.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC") if incident.updated_at else None,
+            "resolved_at": incident.resolved_at.strftime("%Y-%m-%d %H:%M:%S UTC") if incident.resolved_at else None,
+            "extra_data": incident.extra_data or {}
+        }
+        
+        # Prepare evidence data
+        evidence_data = []
+        for artifact in artifacts:
+            evidence_data.append({
+                "id": str(artifact.id),
+                "artifact_type": artifact.artifact_type,
+                "source": artifact.source,
+                "provider": artifact.provider,
+                "region": artifact.region,
+                "collector": artifact.collector,
+                "collected_at": artifact.collected_at.strftime("%Y-%m-%d %H:%M:%S UTC") if artifact.collected_at else None,
+                "content": artifact.content,
+                "hash": artifact.hash,
+                "collection_status": artifact.collection_status,
+                "integrity_verified": artifact.integrity_verified,
+            })
+        
+        # Generate PDF
+        pdf_generator = PDFReportGenerator()
+        pdf_bytes = pdf_generator.generate_incident_report(incident_data, evidence_data)
+        
+        # Generate filename
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"incident_report_{incident_id}_{timestamp}.pdf"
+        
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error exporting PDF: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 # ================================================================
 # UPDATE INCIDENT PRIORITY
 # ================================================================
