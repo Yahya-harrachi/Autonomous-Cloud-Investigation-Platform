@@ -7,6 +7,8 @@ from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
+import uuid
+import re
 
 from sqlalchemy.orm import Session
 
@@ -46,7 +48,7 @@ class ToolRegistry:
         # Tool 1: Search Incidents
         self.register(Tool(
             name="search_incidents",
-            description="Search for security incidents with optional filters",
+            description="Search for security incidents with optional filters like severity, status, date range, or search term",
             parameters={
                 "severity": {
                     "type": "array",
@@ -57,16 +59,6 @@ class ToolRegistry:
                     "type": "array",
                     "items": {"type": "string", "enum": ["pending", "investigating", "completed", "resolved"]},
                     "description": "Filter by status"
-                },
-                "date_from": {
-                    "type": "string",
-                    "format": "date-time",
-                    "description": "Start date for incident search"
-                },
-                "date_to": {
-                    "type": "string",
-                    "format": "date-time",
-                    "description": "End date for incident search"
                 },
                 "search_term": {
                     "type": "string",
@@ -86,7 +78,7 @@ class ToolRegistry:
         # Tool 2: Get Incident Details
         self.register(Tool(
             name="get_incident",
-            description="Get detailed information about a specific incident",
+            description="Get detailed information about a specific incident by ID",
             parameters={
                 "incident_id": {
                     "type": "string",
@@ -99,9 +91,22 @@ class ToolRegistry:
         # Tool 3: Get Incident Stats
         self.register(Tool(
             name="get_incident_stats",
-            description="Get summary statistics for incidents",
+            description="Get summary statistics for all incidents",
             parameters={},
             handler=self._get_incident_stats
+        ))
+
+        # Tool 4: Get Incident Evidence
+        self.register(Tool(
+            name="get_incident_evidence",
+            description="Get all evidence artifacts for a specific incident",
+            parameters={
+                "incident_id": {
+                    "type": "string",
+                    "description": "The ID of the incident (e.g., inc-abc123 or UUID)"
+                }
+            },
+            handler=self._get_incident_evidence
         ))
     
     def register(self, tool: Tool):
@@ -131,17 +136,6 @@ class ToolRegistry:
     def _search_incidents(self, **kwargs) -> Dict[str, Any]:
         """
         Search for incidents with optional filters.
-        
-        Args:
-            severity: List of severity levels
-            status: List of status values
-            date_from: Start date
-            date_to: End date
-            search_term: Text search
-            limit: Max results
-            
-        Returns:
-            Dict with incidents and metadata
         """
         db = next(get_db())
         try:
@@ -163,28 +157,12 @@ class ToolRegistry:
                 except ValueError:
                     pass
             
-            # Apply date filter
-            if kwargs.get('date_from'):
-                try:
-                    date_from = datetime.fromisoformat(kwargs['date_from'])
-                    query = query.filter(IncidentModel.created_at >= date_from)
-                except ValueError:
-                    pass
-            
-            if kwargs.get('date_to'):
-                try:
-                    date_to = datetime.fromisoformat(kwargs['date_to'])
-                    query = query.filter(IncidentModel.created_at <= date_to)
-                except ValueError:
-                    pass
-            
             # Apply search term
             if kwargs.get('search_term'):
                 search = f"%{kwargs['search_term']}%"
                 query = query.filter(
                     IncidentModel.title.ilike(search) |
-                    IncidentModel.description.ilike(search) |
-                    IncidentModel.tags.cast(str).ilike(search)
+                    IncidentModel.description.ilike(search)
                 )
             
             # Apply limit
@@ -196,12 +174,14 @@ class ToolRegistry:
             # Format results
             results = []
             for incident in incidents:
+                priority_value = incident.priority.value if incident.priority else "UNKNOWN"
+                
                 results.append({
                     "id": str(incident.id),
                     "display_id": f"inc-{str(incident.id)[:12]}",
                     "title": incident.title,
                     "description": incident.description[:200] + "..." if len(incident.description) > 200 else incident.description,
-                    "priority": incident.priority.value if incident.priority else "UNKNOWN",
+                    "priority": priority_value.upper(),
                     "status": incident.status.value if incident.status else "pending",
                     "source_type": incident.source_type,
                     "tags": incident.tags or [],
@@ -231,12 +211,6 @@ class ToolRegistry:
     def _get_incident(self, **kwargs) -> Dict[str, Any]:
         """
         Get detailed information about a specific incident.
-        
-        Args:
-            incident_id: The ID of the incident
-            
-        Returns:
-            Incident details with evidence summary
         """
         incident_id = kwargs.get('incident_id')
         if not incident_id:
@@ -247,47 +221,78 @@ class ToolRegistry:
         
         db = next(get_db())
         try:
-            # Parse incident ID
-            try:
-                incident_uuid = parse_incident_id(incident_id)
-            except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"Invalid incident ID: {str(e)}"
-                }
+            # Try to find the incident by various ID formats
+            incident = None
             
-            # Get incident
-            incident = db.query(IncidentModel).filter(
-                IncidentModel.id == incident_uuid
-            ).first()
+            # METHOD 1: Check if it's a display ID (inc-xxx format)
+            if incident_id.startswith('inc-'):
+                display_suffix = incident_id[4:]
+                
+                # Search for incident where display ID matches
+                all_incidents = db.query(IncidentModel).all()
+                for inc in all_incidents:
+                    inc_display = f"inc-{str(inc.id)[:12]}"
+                    if inc_display == incident_id:
+                        incident = inc
+                        break
+                
+                if not incident and display_suffix:
+                    for inc in all_incidents:
+                        if str(inc.id).startswith(display_suffix):
+                            incident = inc
+                            break
+                
+                if not incident:
+                    return {
+                        "success": False,
+                        "error": f"Incident not found with ID: {incident_id}"
+                    }
             
-            if not incident:
-                return {
-                    "success": False,
-                    "error": f"Incident not found: {incident_id}"
-                }
+            # METHOD 2: Try as full UUID
+            else:
+                try:
+                    incident_uuid = parse_incident_id(incident_id)
+                    incident = db.query(IncidentModel).filter(
+                        IncidentModel.id == incident_uuid
+                    ).first()
+                except Exception:
+                    if len(incident_id) == 12:
+                        all_incidents = db.query(IncidentModel).all()
+                        for inc in all_incidents:
+                            inc_display = f"inc-{str(inc.id)[:12]}"
+                            if inc_display == f"inc-{incident_id}":
+                                incident = inc
+                                break
+                
+                if not incident:
+                    return {
+                        "success": False,
+                        "error": f"Incident not found: {incident_id}"
+                    }
             
             # Get evidence summary
             evidence_count = db.query(EvidenceArtifact).filter(
-                EvidenceArtifact.incident_id == incident_uuid
+                EvidenceArtifact.incident_id == incident.id
             ).count()
             
             evidence_types = db.query(
                 EvidenceArtifact.artifact_type,
                 EvidenceArtifact.collection_status
             ).filter(
-                EvidenceArtifact.incident_id == incident_uuid
+                EvidenceArtifact.incident_id == incident.id
             ).all()
             
             evidence_summary = {}
             for ev_type, status in evidence_types:
                 if ev_type not in evidence_summary:
-                    evidence_summary[ev_type] = {"total": 0, "completed": 0, "failed": 0}
+                    evidence_summary[ev_type] = {"total": 0, "completed": 0, "failed": 0, "pending": 0}
                 evidence_summary[ev_type]["total"] += 1
                 if status == "COMPLETED":
                     evidence_summary[ev_type]["completed"] += 1
                 elif status == "FAILED":
                     evidence_summary[ev_type]["failed"] += 1
+                elif status == "PENDING":
+                    evidence_summary[ev_type]["pending"] += 1
             
             return {
                 "success": True,
@@ -324,9 +329,6 @@ class ToolRegistry:
     def _get_incident_stats(self, **kwargs) -> Dict[str, Any]:
         """
         Get summary statistics for incidents.
-        
-        Returns:
-            Statistics about incidents
         """
         db = next(get_db())
         try:
@@ -344,7 +346,6 @@ class ToolRegistry:
                 IncidentModel.status == IncidentStatus.RESOLVED
             ).count()
             
-            # Priority breakdown
             critical = db.query(IncidentModel).filter(
                 IncidentModel.priority == IncidentPriority.CRITICAL
             ).count()
@@ -377,6 +378,154 @@ class ToolRegistry:
             
         except Exception as e:
             logger.error(f"Error getting incident stats: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        finally:
+            db.close()
+
+
+    def _get_incident_evidence(self, **kwargs) -> Dict[str, Any]:
+        """
+        Get all evidence artifacts for a specific incident.
+        
+        Args:
+            incident_id: The ID of the incident
+            
+        Returns:
+            Evidence artifacts with details
+        """
+        incident_id = kwargs.get('incident_id')
+        if not incident_id:
+            return {
+                "success": False,
+                "error": "incident_id is required"
+            }
+        
+        db = next(get_db())
+        try:
+            # Find the incident first
+            incident = None
+            
+            # Try as display ID
+            if incident_id.startswith('inc-'):
+                display_suffix = incident_id[4:]
+                all_incidents = db.query(IncidentModel).all()
+                for inc in all_incidents:
+                    inc_display = f"inc-{str(inc.id)[:12]}"
+                    if inc_display == incident_id:
+                        incident = inc
+                        break
+                
+                if not incident and display_suffix:
+                    for inc in all_incidents:
+                        if str(inc.id).startswith(display_suffix):
+                            incident = inc
+                            break
+            
+            # Try as UUID
+            if not incident:
+                try:
+                    incident_uuid = parse_incident_id(incident_id)
+                    incident = db.query(IncidentModel).filter(
+                        IncidentModel.id == incident_uuid
+                    ).first()
+                except Exception:
+                    pass
+            
+            if not incident:
+                return {
+                    "success": False,
+                    "error": f"Incident not found: {incident_id}"
+                }
+            
+            # Get all evidence artifacts
+            artifacts = db.query(EvidenceArtifact).filter(
+                EvidenceArtifact.incident_id == incident.id
+            ).all()
+            
+            # Format evidence
+            evidence_list = []
+            for artifact in artifacts:
+                artifact_data = {
+                    "id": str(artifact.id),
+                    "artifact_type": artifact.artifact_type,
+                    "source": artifact.source,
+                    "collector": artifact.collector,
+                    "collection_status": artifact.collection_status,
+                    "collected_at": artifact.collected_at.isoformat() if artifact.collected_at else None,
+                    "hash": artifact.hash,
+                    "integrity_verified": artifact.integrity_verified,
+                    "content": artifact.content
+                }
+                
+                # Add summary based on type
+                content = artifact.content or {}
+                
+                if artifact.artifact_type == 'CloudTrailEvent':
+                    summary = content.get('summary', {})
+                    timeline = content.get('timeline', [])
+                    artifact_data['summary'] = {
+                        "total_events": summary.get('total_events', 0),
+                        "timeline_events": len(timeline),
+                        "patterns_found": summary.get('patterns_found', 0)
+                    }
+                    if timeline:
+                        artifact_data['timeline_preview'] = [
+                            {
+                                "time": e.get('event_time', 'N/A')[:16] if e.get('event_time') else 'N/A',
+                                "event": e.get('event_name', 'Unknown'),
+                                "actor": e.get('actor', 'Unknown')
+                            }
+                            for e in timeline[:5]
+                        ]
+                
+                elif artifact.artifact_type == 'IAMUser':
+                    user = content.get('user', {})
+                    summary = content.get('summary', {})
+                    artifact_data['summary'] = {
+                        "user_name": user.get('user_name', 'N/A'),
+                        "user_id": user.get('user_id', 'N/A'),
+                        "mfa_active": user.get('mfa_active', False),
+                        "attached_policies": summary.get('total_attached_policies', 0),
+                        "access_keys": summary.get('total_access_keys', 0)
+                    }
+                
+                elif artifact.artifact_type == 'IAMPolicy':
+                    policies = content.get('policies', [])
+                    security_analysis = content.get('security_analysis', {})
+                    artifact_data['summary'] = {
+                        "total_policies": len(policies),
+                        "high_risk_findings": len(security_analysis.get('high_risk_findings', [])),
+                        "policies": [
+                            {
+                                "name": p.get('policy_name', 'Unknown'),
+                                "admin_access": p.get('summary', {}).get('has_administrator_access', False)
+                            }
+                            for p in policies[:5]
+                        ]
+                    }
+                
+                elif artifact.artifact_type == 'IAMRole':
+                    roles = content.get('roles', [])
+                    artifact_data['summary'] = {
+                        "total_roles": len(roles),
+                        "roles": [r.get('role_name', 'Unknown') for r in roles[:5]]
+                    }
+                
+                evidence_list.append(artifact_data)
+            
+            return {
+                "success": True,
+                "incident_id": incident_id,
+                "display_id": f"inc-{str(incident.id)[:12]}",
+                "total_evidence": len(evidence_list),
+                "evidence": evidence_list
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting incident evidence: {e}")
             return {
                 "success": False,
                 "error": str(e)

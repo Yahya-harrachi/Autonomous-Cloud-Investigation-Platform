@@ -23,66 +23,139 @@ class LLMOrchestrator:
         self.model = "llama3.2:3b"
 
     def _get_system_prompt(self) -> str:
-        """Get the system prompt with tool descriptions."""
+        """Get the system prompt with strict anti-hallucination rules."""
         tools = tool_registry.list_tools()
         tools_description = "\n".join([
             f"- {tool['name']}: {tool['description']}"
-            f"  Parameters: {json.dumps(tool['parameters'], indent=2)}"
             for tool in tools
         ])
 
+        tool_schemas = []
+        for tool in tools:
+            tool_schemas.append(f"""
+{tool['name']}
+Parameters: {json.dumps(tool['parameters'], indent=2)}
+""")
+
         return f"""You are ACIP-AI, an AI assistant for the Autonomous Cloud Investigation Platform (ACIP).
 
-You help SOC analysts investigate security incidents in AWS cloud environments.
+## ⚠️ CRITICAL RULES - READ CAREFULLY:
+1. **NEVER invent or make up incidents, evidence, or any data.**
+2. **ALWAYS use tools to retrieve real data from the database.**
+3. **NEVER say "I found" unless a tool actually returned results.**
+4. **NEVER show incidents with IDs that don't exist in the tool results.**
+5. **If no data is returned, say: "No incidents found matching your criteria."**
+6. **If a tool returns an error, say: "I encountered an error retrieving that information."**
+7. **If you are not calling a tool, ONLY answer general/conceptual questions
+   (e.g. "how does severity scoring work"). NEVER state a specific count,
+   ID, name, or timestamp unless it came directly from a tool result.**
 
-## Your Capabilities:
-You have access to the following tools to retrieve information:
+## Available Tools:
 {tools_description}
 
-## How to Use Tools:
-When a user asks a question that requires data, you should:
-1. Identify which tool can answer the question
-2. Respond with a structured tool call in this exact format:
+## Tool Schemas:
+{''.join(tool_schemas)}
+
+## How to call a tool:
+When you need to retrieve data, respond with ONLY a tool call in this exact format,
+and nothing else:
+
 ```tool
 {{
   "tool": "tool_name",
   "arguments": {{
-    "arg1": "value1",
-    "arg2": "value2"
+    "param1": "value1",
+    "param2": "value2"
   }}
 }}
 ```
-3. After receiving the tool result, explain it to the user in natural language.
-
-## Important Rules:
-- You are a READ-ONLY assistant. You cannot modify incidents, evidence, or AWS resources.
-- Only use the tools listed above. Do not invent tools.
-- If you don't know something, say so. Do not make up information.
-- Distinguish between facts (what actually happened) and interpretations (what it might mean).
-- Be concise and professional. Focus on security investigation.
-
-## Example Conversation:
-User: "Show me critical incidents from today"
-You:
-```tool
-{{
-  "tool": "search_incidents",
-  "arguments": {{
-    "severity": ["CRITICAL"],
-    "date_from": "2026-08-21T00:00:00Z"
-  }}
-}}
-```
-Then after getting results:
-"I found 3 critical incidents from today:
-1. [CRITICAL] DeleteUser by admin - Created at 10:23 AM
-2. [CRITICAL] AttachUserPolicy by yahya-harrachi - Created at 11:45 AM
-3. [CRITICAL] CreateAccessKey by root - Created at 2:15 PM
-
-The most recent is the CreateAccessKey by root. Would you like details on any specific incident?"
-
-Current time: {datetime.utcnow().isoformat()}
 """
+
+    # ============================================================
+    # ✅ NEW: deterministic intent routing
+    # ============================================================
+
+    def _detect_intent(self, message: str) -> Optional[Dict[str, Any]]:
+        """
+        Deterministic keyword/regex-based intent routing.
+
+        Small local models (llama3.2:3b) do not reliably emit the exact
+```tool fenced JSON format on every data-seeking message. When
+        they fail to, the old code fell straight through to returning
+        the model's raw, unverified prose — which is how it started
+        inventing incidents. This routes the clearest, most common
+        intents to a real tool call directly, without depending on the
+        LLM to decide to call a tool at all. The LLM is only consulted
+        for the free-form fallback path, which is itself guarded below
+        by _looks_like_unverified_data_claim().
+        """
+        text = message.lower().strip()
+
+        # --- Stats intent ---
+        if 'incident' in text and re.search(r'\b(how many|stats?|statistics|summary|overview)\b', text):
+            return {"tool": "get_incident_stats", "arguments": {}}
+
+        # --- Specific incident / evidence by ID ---
+        id_match = re.search(
+            r'\b(inc-[a-f0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b',
+            message,
+            re.IGNORECASE
+        )
+        if id_match:
+            if 'evidence' in text:
+                return {"tool": "get_incident_evidence", "arguments": {"incident_id": id_match.group(1)}}
+            return {"tool": "get_incident", "arguments": {"incident_id": id_match.group(1)}}
+
+        # --- Search / list intent ---
+        search_triggers = [
+            'show me', 'find', 'list', 'search', 'incidents', 'critical', 'pending',
+            'investigating', 'resolved', 'completed', 'latest', 'recent'
+        ]
+        if 'incident' in text and any(t in text for t in search_triggers):
+            arguments: Dict[str, Any] = {}
+
+            severities = [s.upper() for s in ["critical", "high", "medium", "low", "info"] if s in text]
+            if severities:
+                arguments["severity"] = severities
+
+            statuses = [s for s in ["pending", "investigating", "completed", "resolved"] if s in text]
+            if statuses:
+                arguments["status"] = statuses
+
+            if re.search(r'\blatest\b|\bmost recent\b|\blast\b', text):
+                arguments["limit"] = 1
+
+            # Light topic heuristic — never a source of truth on its own,
+            # just narrows the DB query; still 100% real data either way.
+            topic_keywords = [
+                "iam", "s3", "ec2", "root", "policy", "role", "bucket",
+                "security group", "access key", "mfa", "delete", "create"
+            ]
+            matched_topics = [kw for kw in topic_keywords if kw in text]
+            if matched_topics and "search_term" not in arguments:
+                arguments["search_term"] = matched_topics[0]
+
+            return {"tool": "search_incidents", "arguments": arguments}
+
+        return None
+
+    def _looks_like_unverified_data_claim(self, text: str) -> bool:
+        """
+        Heuristic hallucination guard for the free-text fallback path.
+        If the model answered directly (no tool call was made — meaning
+        the database was never touched) but the text looks like it's
+        citing specific incident data — IDs, "Found N incidents",
+        invented timestamps — it is almost certainly fabricated. Block
+        it instead of letting it reach the user.
+        """
+        patterns = [
+            r'\binc-[a-f0-9]{4,}\b',                    # fabricated incident IDs
+            r'\bfound\s+\d+\s+incident',                # "Found 3 incidents"
+            r'\b\d+\s+critical\s+incident',
+            r'created\s+at\s+\d{1,2}:\d{2}\s*(am|pm)?',  # invented timestamps
+        ]
+        lowered = text.lower()
+        return any(re.search(p, lowered) for p in patterns)
 
     def process_message(self, message: str, history: List[Dict[str, str]]) -> Dict[str, Any]:
         """
@@ -96,7 +169,25 @@ Current time: {datetime.utcnow().isoformat()}
             Dict with response and metadata
         """
         try:
-            # Step 1: Send to LLM with system prompt
+            # ✅ NEW: try deterministic intent routing FIRST. This bypasses
+            # the small model's unreliable tool-call formatting entirely
+            # for the common, well-defined intents.
+            forced_call = self._detect_intent(message)
+
+            if forced_call:
+                logger.info(f"🎯 Deterministic intent match: {forced_call['tool']} {forced_call['arguments']}")
+                tool_result = self._execute_tool(forced_call["tool"], forced_call["arguments"])
+                explanation = self._generate_explanation(forced_call, tool_result, history)
+
+                return {
+                    "success": True,
+                    "response": explanation,
+                    "tool_used": forced_call["tool"],
+                    "tool_result": tool_result,
+                    "model": self.model
+                }
+
+            # Step 1: Send to LLM with system prompt (fallback path)
             messages = [
                 {"role": "system", "content": self._get_system_prompt()}
             ]
@@ -129,7 +220,7 @@ Current time: {datetime.utcnow().isoformat()}
                 # Step 3: Execute the tool
                 tool_result = self._execute_tool(tool_call["tool"], tool_call["arguments"])
 
-                # Step 4: Send tool result back to LLM for explanation
+                # Step 4: Format the real tool result (deterministic, no LLM)
                 explanation = self._generate_explanation(tool_call, tool_result, messages)
 
                 return {
@@ -140,7 +231,24 @@ Current time: {datetime.utcnow().isoformat()}
                     "model": self.model
                 }
             else:
-                # No tool call, return the response directly
+                # ✅ NEW: the model answered directly, without touching the
+                # database. If that answer looks like it's citing specific
+                # data anyway, it's fabricated — refuse rather than show it.
+                if self._looks_like_unverified_data_claim(response_content):
+                    logger.warning(f"⚠️ Blocked unverified data claim from LLM: {response_content[:200]}")
+                    return {
+                        "success": True,
+                        "response": (
+                            "I can only share incident or evidence data retrieved directly "
+                            "from ACIP's database, and I wasn't able to confirm that with a "
+                            "lookup just now. Could you rephrase — for example, "
+                            "\"show me critical incidents\" or \"how many incidents are pending?\""
+                        ),
+                        "model": self.model
+                    }
+
+                # Safe: genuinely conversational/conceptual answer, no
+                # specific data claims detected.
                 return {
                     "success": True,
                     "response": response_content,
@@ -158,12 +266,27 @@ Current time: {datetime.utcnow().isoformat()}
     def _extract_tool_call(self, content: str) -> Optional[Dict[str, Any]]:
         """Extract tool call from the LLM response."""
         try:
-            # Look for tool call pattern: ```tool ... ```
+            # Primary: exact fenced format
             pattern = r'```tool\s*\n(.*?)\n```'
             match = re.search(pattern, content, re.DOTALL)
 
             if match:
                 tool_data = json.loads(match.group(1))
+                if "tool" in tool_data and "arguments" in tool_data:
+                    return tool_data
+
+            # ✅ NEW fallback: small models sometimes drop the fence or add
+            # stray text around it. Look for any JSON object anywhere in
+            # the response that contains both "tool" and "arguments" keys,
+            # so a slightly-malformed-but-genuine tool call attempt still
+            # gets caught (better than falling through to raw prose).
+            brace_match = re.search(
+                r'\{[^{}]*"tool"[^{}]*"arguments"[^{}]*\{.*?\}[^{}]*\}',
+                content,
+                re.DOTALL
+            )
+            if brace_match:
+                tool_data = json.loads(brace_match.group(0))
                 if "tool" in tool_data and "arguments" in tool_data:
                     return tool_data
 
@@ -184,7 +307,6 @@ Current time: {datetime.utcnow().isoformat()}
             }
 
         try:
-            # Validate arguments
             result = tool.handler(**arguments)
             return result
 
@@ -201,19 +323,22 @@ Current time: {datetime.utcnow().isoformat()}
         tool_result: Dict[str, Any],
         history: List[Dict[str, str]]
     ) -> str:
-        """Generate a natural language explanation of tool results."""
-
-        # If tool execution failed
+        """
+        Generate a response from tool results.
+        ✅ Deterministic — pure formatting over real data, never an LLM
+        call. This is what makes tool-based responses hallucination-proof.
+        """
         if not tool_result.get("success"):
             return f"I tried to {tool_call['tool']}, but encountered an error: {tool_result.get('error', 'Unknown error')}"
 
-        # Format results based on tool type
         if tool_call["tool"] == "search_incidents":
             return self._format_incident_search_results(tool_result)
         elif tool_call["tool"] == "get_incident":
             return self._format_incident_details(tool_result)
         elif tool_call["tool"] == "get_incident_stats":
             return self._format_stats(tool_result)
+        elif tool_call["tool"] == "get_incident_evidence":
+            return self._format_evidence(tool_result)
         else:
             return f"Here are the results from {tool_call['tool']}:\n\n{json.dumps(tool_result, indent=2)}"
 
@@ -282,15 +407,12 @@ Current time: {datetime.utcnow().isoformat()}
         response += f"Priority: {incident.get('priority', 'N/A')}\n"
         response += f"Created: {incident.get('created_at', 'N/A')}\n\n"
 
-        # Description
         if incident.get('description'):
             response += f"Description:\n{incident['description']}\n\n"
 
-        # Tags
         if incident.get('tags'):
             response += f"Tags: {', '.join(incident['tags'][:10])}\n\n"
 
-        # Evidence summary
         evidence_summary = incident.get('evidence_summary', {})
         if evidence_summary:
             response += f"Evidence Collected:\n"
@@ -300,7 +422,6 @@ Current time: {datetime.utcnow().isoformat()}
                     response += f" ({data['failed']} failed)"
                 response += "\n"
 
-        # Assignment
         if incident.get('assigned_to'):
             response += f"\nAssigned To: {incident['assigned_to']}"
 
@@ -316,20 +437,83 @@ Current time: {datetime.utcnow().isoformat()}
         response = "📊 Incident Statistics\n\n"
         response += f"Total Incidents: {stats.get('total', 0)}\n\n"
 
-        # By status
         response += "By Status:\n"
         response += f"  ⏳ Pending: {stats.get('pending', 0)}\n"
         response += f"  🔍 Investigating: {stats.get('investigating', 0)}\n"
         response += f"  ✅ Completed: {stats.get('completed', 0)}\n"
         response += f"  🔒 Resolved: {stats.get('resolved', 0)}\n\n"
 
-        # By priority
         by_priority = stats.get('by_priority', {})
         response += "By Priority:\n"
         response += f"  🔴 Critical: {by_priority.get('critical', 0)}\n"
         response += f"  🟠 High: {by_priority.get('high', 0)}\n"
         response += f"  🟡 Medium: {by_priority.get('medium', 0)}\n"
         response += f"  🔵 Low: {by_priority.get('low', 0)}\n"
+
+        return response
+
+    def _format_evidence(self, result: Dict[str, Any]) -> str:
+        """Format evidence results from real data only."""
+        if not result.get("success"):
+            return f"❌ Error retrieving evidence: {result.get('error', 'Unknown error')}"
+
+        total = result.get('total_evidence', 0)
+        if total == 0:
+            return f"📋 No evidence found for incident {result.get('display_id', '')}"
+
+        # ✅ FIX: was using markdown **bold** — the frontend renders this
+        # with plain whitespace-pre-wrap (no markdown parser), so users
+        # were literally seeing "**Evidence for...**" with asterisks.
+        # Switched to the same plain-text style as the other formatters.
+        response = f"📋 Evidence for {result.get('display_id', '')}\n\n"
+        response += f"Total Artifacts: {total}\n\n"
+
+        for i, artifact in enumerate(result.get('evidence', []), 1):
+            artifact_type = artifact.get('artifact_type', 'Unknown')
+            status = artifact.get('collection_status', 'Unknown')
+            status_emoji = '✅' if status == 'COMPLETED' else '⚠️' if status == 'PARTIAL' else '❌'
+
+            response += f"{i}. {artifact_type} {status_emoji}\n"
+            response += f"   • Source: {artifact.get('source', 'N/A')}\n"
+            response += f"   • Collector: {artifact.get('collector', 'N/A')}\n"
+            response += f"   • Collected: {artifact.get('collected_at', 'N/A')[:16] if artifact.get('collected_at') else 'N/A'}\n"
+
+            summary = artifact.get('summary', {})
+
+            if artifact_type == 'CloudTrailEvent':
+                response += f"   • Events: {summary.get('total_events', 0)} | Timeline: {summary.get('timeline_events', 0)} events\n"
+                timeline = artifact.get('timeline_preview', [])
+                if timeline:
+                    response += f"   • Timeline preview:\n"
+                    for event in timeline[:3]:
+                        response += f"     - {event.get('time', 'N/A')} - {event.get('event', 'Unknown')} by {event.get('actor', 'Unknown')}\n"
+
+            elif artifact_type == 'IAMUser':
+                response += f"   • User: {summary.get('user_name', 'N/A')}\n"
+                response += f"   • MFA: {'✅ Enabled' if summary.get('mfa_active') else '❌ Disabled'}\n"
+                response += f"   • Policies: {summary.get('attached_policies', 0)} | Access Keys: {summary.get('access_keys', 0)}\n"
+
+            elif artifact_type == 'IAMPolicy':
+                response += f"   • Total Policies: {summary.get('total_policies', 0)}\n"
+                response += f"   • High Risk: {summary.get('high_risk_findings', 0)}\n"
+                policies = summary.get('policies', [])
+                if policies:
+                    response += f"   • Policies:\n"
+                    for policy in policies[:3]:
+                        admin = '🔴 (Admin)' if policy.get('admin_access') else ''
+                        response += f"     - {policy.get('name', 'Unknown')} {admin}\n"
+
+            elif artifact_type == 'IAMRole':
+                response += f"   • Total Roles: {summary.get('total_roles', 0)}\n"
+                roles = summary.get('roles', [])
+                if roles:
+                    response += f"   • Roles: {', '.join(roles[:3])}\n"
+
+            hash_val = artifact.get('hash', '')
+            if hash_val:
+                response += f"   • SHA-256: {hash_val[:20]}...\n"
+
+            response += "\n"
 
         return response
 

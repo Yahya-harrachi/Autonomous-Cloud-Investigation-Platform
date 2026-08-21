@@ -128,13 +128,6 @@ Be professional, concise, and helpful. Focus on cloud security and incident inve
     def chat_with_tools(self, messages: List[Dict[str, str]], model: Optional[str] = None) -> Dict[str, Any]:
         """
         Chat with Ollama specifically for tool-based interactions.
-        
-        Args:
-            messages: The full message history including system prompt
-            model: The model to use (defaults to self.model)
-            
-        Returns:
-            Dict with the response and metadata
         """
         try:
             request_data = {
@@ -142,9 +135,9 @@ Be professional, concise, and helpful. Focus on cloud security and incident inve
                 "messages": messages,
                 "stream": False,
                 "options": {
-                    "temperature": 0.3,  # Lower temperature for consistent tool calls
+                    "temperature": 0.1,  # Very low for consistent tool calls
                     "top_p": 0.9,
-                    "num_predict": 1024  # Higher for complex responses
+                    "num_predict": 1024
                 }
             }
             
@@ -154,7 +147,6 @@ Be professional, concise, and helpful. Focus on cloud security and incident inve
             )
             
             if response.status_code != 200:
-                logger.error(f"Ollama API error (tools): {response.status_code} - {response.text}")
                 return {
                     "success": False,
                     "error": f"Ollama API error: {response.status_code}"
@@ -168,12 +160,6 @@ Be professional, concise, and helpful. Focus on cloud security and incident inve
                 "tokens": result.get("eval_count", 0)
             }
             
-        except httpx.TimeoutException:
-            logger.error("Ollama request timed out (tools)")
-            return {
-                "success": False,
-                "error": "Request timed out"
-            }
         except Exception as e:
             logger.error(f"Error in Ollama chat_with_tools: {e}")
             return {
