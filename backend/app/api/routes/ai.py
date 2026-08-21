@@ -8,6 +8,8 @@ from typing import Optional, List, Dict, Any
 import logging
 from datetime import datetime
 
+from app.ai.orchestrator import llm_orchestrator
+
 from app.services.ollama_service import ollama_service
 
 logger = logging.getLogger(__name__)
@@ -67,17 +69,16 @@ async def ai_health():
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Send a message to the AI assistant.
+    Send a message to the AI assistant with tool support.
     """
     logger.info(f"AI Chat request: {request.message[:50]}...")
     
-    # Generate conversation ID if not provided
     conversation_id = request.conversation_id or f"conv-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
     
-    # Send to Ollama
-    result = ollama_service.chat(
+    # Process with orchestrator
+    result = llm_orchestrator.process_message(
         message=request.message,
-        conversation_history=request.history
+        history=request.history or []
     )
     
     if not result.get("success"):
@@ -89,7 +90,7 @@ async def chat(request: ChatRequest):
         conversation_id=conversation_id,
         timestamp=datetime.utcnow().isoformat(),
         model=result.get("model", "llama3.2:3b"),
-        tokens=result.get("tokens", 0)
+        tokens=0  # We'll track this later
     )
 
 

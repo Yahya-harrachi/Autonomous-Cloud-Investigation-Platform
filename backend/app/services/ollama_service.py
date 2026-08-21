@@ -1,4 +1,4 @@
-# app/services/ollama_service.py
+
 """
 Ollama Service - Handles communication with local Ollama LLM
 """
@@ -21,13 +21,11 @@ class OllamaService:
     def __init__(self):
         self.base_url = "http://localhost:11434"
         self.model = "llama3.2:3b"
-        self.timeout = 60.0  # Increased for model inference
+        self.timeout = 120.0  # Increased for complex reasoning
         self.client = httpx.Client(timeout=self.timeout)
         
     def _get_system_prompt(self) -> str:
-        """
-        Get the system prompt for the AI assistant.
-        """
+        """Get the system prompt for the AI assistant."""
         return """You are ACIP-AI, an AI assistant for the Autonomous Cloud Investigation Platform.
 You help SOC analysts investigate security incidents in AWS cloud environments.
 
@@ -127,10 +125,66 @@ Be professional, concise, and helpful. Focus on cloud security and incident inve
                 "response": "An error occurred while processing your request."
             }
     
+    def chat_with_tools(self, messages: List[Dict[str, str]], model: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Chat with Ollama specifically for tool-based interactions.
+        
+        Args:
+            messages: The full message history including system prompt
+            model: The model to use (defaults to self.model)
+            
+        Returns:
+            Dict with the response and metadata
+        """
+        try:
+            request_data = {
+                "model": model or self.model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": 0.3,  # Lower temperature for consistent tool calls
+                    "top_p": 0.9,
+                    "num_predict": 1024  # Higher for complex responses
+                }
+            }
+            
+            response = self.client.post(
+                f"{self.base_url}/api/chat",
+                json=request_data
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Ollama API error (tools): {response.status_code} - {response.text}")
+                return {
+                    "success": False,
+                    "error": f"Ollama API error: {response.status_code}"
+                }
+            
+            result = response.json()
+            return {
+                "success": True,
+                "response": result.get("message", {}).get("content", ""),
+                "model": result.get("model", model or self.model),
+                "tokens": result.get("eval_count", 0)
+            }
+            
+        except httpx.TimeoutException:
+            logger.error("Ollama request timed out (tools)")
+            return {
+                "success": False,
+                "error": "Request timed out"
+            }
+        except Exception as e:
+            logger.error(f"Error in Ollama chat_with_tools: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
     def is_available(self) -> bool:
         """Check if Ollama is available."""
         try:
-            response = self.client.get(f"{self.base_url}/api/tags")
+            response = self.client.get(f"{self.base_url}/api/tags", timeout=5.0)
             return response.status_code == 200
         except Exception:
             return False
