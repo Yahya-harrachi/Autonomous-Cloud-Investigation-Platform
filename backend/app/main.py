@@ -14,6 +14,7 @@ from .api.routes import websocket
 from .core.database import engine, Base
 from .models.incident import IncidentModel
 from .domain.models.risk_rule import RuleModel
+from .api.routes import ai  
 
 
 # Create database tables
@@ -41,7 +42,8 @@ app.include_router(rules.router)
 app.include_router(cloudtrail.router)
 app.include_router(cloudtrail_normalized.router)
 app.include_router(sqs.router)
-app.include_router(websocket.router)  # Add this
+app.include_router(websocket.router)
+app.include_router(ai.router)  # Include the AI router
 
 @app.get("/")
 async def root():

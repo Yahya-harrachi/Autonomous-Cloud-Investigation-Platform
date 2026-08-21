@@ -16,7 +16,14 @@ const Header = () => {
             <Link to="/incidents" className="hover:text-gray-300">Incidents</Link>
             <Link to="/events" className="hover:text-gray-300">Events</Link>
             <Link to="/realtime-events" className="hover:text-gray-300">Live Events</Link>
-            <Link to="/rules" className="hover:text-gray-300">Rules</Link>  
+            <Link to="/rules" className="hover:text-gray-300">Rules</Link>
+            <Link
+              to="/ai-assistant"
+              className={`hover:text-gray-300`}
+            >
+              
+              <span>AI Assistant</span>
+            </Link>
           </nav>
         </div>
       </div>

@@ -9,6 +9,7 @@ import EventsViewer from './pages/EventsViewer';
 import RuleList from './pages/RuleList';        
 import RuleForm from './pages/RuleForm';  
 import RealtimeEventsViewer from './pages/RealtimeEventsViewer';
+import AIAssistant from './pages/AIAssistant'; 
 
 
 function App() {
@@ -26,6 +27,7 @@ function App() {
           <Route path="/rules/new" element={<RuleForm />} />       
           <Route path="/rules/:id/edit" element={<RuleForm />} />  
           <Route path="/realtime-events" element={<RealtimeEventsViewer />} />
+          <Route path="/ai-assistant" element={<AIAssistant />} />
         </Routes>
       </div>
     </Router>
