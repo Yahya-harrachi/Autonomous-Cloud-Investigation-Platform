@@ -309,8 +309,8 @@ What would you like to investigate today?`,
 
       {/* Footer Info */}
       <div className="mt-4 text-xs text-gray-400 text-center">
-        <p>ACIP-AI uses Llama 3.2 3B running locally via Ollama. All processing is done on your machine.</p>
-        <p className="mt-1">Version 1.0.0 - Phase 1: Local AI Foundation</p>
+        <p>ACIP-AI uses Llama 3.2 3B running locally via Ollama. All processing is done on our machine.</p>
+        
       </div>
     </div>
   );

@@ -117,7 +117,7 @@ const IncidentList = () => {
 
       {/* Filter Bar */}
       <div className="mb-6 flex space-x-2 flex-wrap gap-2">
-        {['all', 'pending', 'investigating', 'completed', 'resolved'].map((s) => (
+        {['all', 'pending', 'investigating', 'completed'].map((s) => (
           <button
             key={s}
             onClick={() => setFilter(s)}
