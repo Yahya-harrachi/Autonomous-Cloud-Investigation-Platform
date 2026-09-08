@@ -366,89 +366,7 @@ const IAMPolicySummary = ({ content }) => {
 // ============================================================
 // IAM ROLE SUMMARY COMPONENT
 // ============================================================
-const IAMRoleSummary = ({ content }) => {
-  const roles = content?.roles || [];
-  const summary = content?.summary || {};
-  
-  if (!roles || roles.length === 0) {
-    return (
-      <div className="text-sm text-gray-500">
-        No IAM roles found for this incident
-      </div>
-    );
-  }
 
-  return (
-    <div className="space-y-3">
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-purple-50 p-2 rounded">
-          <div className="text-xs text-gray-500">Total Roles</div>
-          <div className="text-lg font-semibold">{summary.total_roles || 0}</div>
-        </div>
-        <div className="bg-red-50 p-2 rounded">
-          <div className="text-xs text-gray-500">Admin Access</div>
-          <div className="text-lg font-semibold text-red-600">{summary.roles_with_admin || 0}</div>
-        </div>
-        <div className="bg-blue-50 p-2 rounded">
-          <div className="text-xs text-gray-500">Has Trust Policy</div>
-          <div className="text-lg font-semibold text-blue-600">{summary.roles_with_trust || 0}</div>
-        </div>
-      </div>
-
-      {/* Role List */}
-      {roles.map((role, idx) => (
-        <div key={idx} className="border border-gray-200 rounded p-3">
-          <div className="flex items-center justify-between">
-            <div className="flex-1 min-w-0">
-              <span className="font-medium text-sm">{role.role_name || 'Unknown'}</span>
-              <div className="text-xs text-gray-400 truncate">{role.arn || 'N/A'}</div>
-            </div>
-            {role.summary?.has_administrator_access && (
-              <span className="ml-2 px-2 py-1 text-xs bg-red-100 text-red-700 rounded-full whitespace-nowrap">
-                🔴 Admin
-              </span>
-            )}
-          </div>
-          
-          <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
-            <span>Attached Policies: {role.summary?.attached_policy_count || 0}</span>
-            <span>• Inline Policies: {role.summary?.inline_policy_count || 0}</span>
-            {role.max_session_duration && (
-              <span>• Session: {role.max_session_duration}s</span>
-            )}
-          </div>
-
-          {/* Trust Policy */}
-          {role.trust_policy && (
-            <div className="mt-2 bg-blue-50 border border-blue-200 rounded p-2">
-              <div className="text-xs font-medium text-blue-700">🔐 Trust Policy</div>
-              <div className="text-xs text-blue-600 mt-1 font-mono">
-                {JSON.stringify(role.trust_policy, null, 2).substring(0, 200)}
-                {JSON.stringify(role.trust_policy, null, 2).length > 200 && '...'}
-              </div>
-            </div>
-          )}
-
-          {/* Attached Policies */}
-          {role.attached_policies && role.attached_policies.length > 0 && (
-            <div className="mt-2">
-              <div className="text-xs font-medium text-gray-700">📋 Attached Policies</div>
-              {role.attached_policies.map((policy, pi) => (
-                <div key={pi} className="mt-1 text-xs text-gray-600">
-                  • {policy.policy_name}
-                  {policy.summary?.has_administrator_access && (
-                    <span className="ml-2 text-red-600">(Admin)</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-};
 
 
 
@@ -778,9 +696,7 @@ const EvidenceCard = ({ artifact, autoVerify = true }) => {
           <IAMPolicySummary content={artifact.content} />
         )}
 
-        {artifact.artifact_type === 'IAMRole' && (
-          <IAMRoleSummary content={artifact.content} />
-        )}
+        
 
         {artifact.artifact_type === 'S3Bucket' && (
           <S3Summary content={artifact.content} />

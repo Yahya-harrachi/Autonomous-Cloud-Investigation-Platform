@@ -459,10 +459,7 @@ npm test
 
 Contributions are welcome! Please read our Contributing Guide for details.
 
-## 📞 Support
 
-- **Documentation**: docs.acip.io
-- **Issues**: GitHub Issues
 
 
 ## ⚠️ Disclaimer
